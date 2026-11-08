@@ -34,6 +34,8 @@ function open(): DatabaseSync {
     CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY, player TEXT, text TEXT, at INTEGER);
     CREATE TABLE IF NOT EXISTS facts (id INTEGER PRIMARY KEY, player TEXT, text TEXT, at INTEGER, UNIQUE (player, text));
     CREATE VIRTUAL TABLE IF NOT EXISTS mem_fts USING fts5(kind UNINDEXED, ref UNINDEXED, player UNINDEXED, text);
+    CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, player TEXT, name TEXT, status TEXT, origin TEXT, created INTEGER);
+    CREATE TABLE IF NOT EXISTS project_steps (id INTEGER PRIMARY KEY, project INTEGER, idx INTEGER, action TEXT, about TEXT, status TEXT, tries INTEGER DEFAULT 0, note TEXT);
     CREATE TABLE IF NOT EXISTS journal (id INTEGER PRIMARY KEY, player TEXT, text TEXT, at INTEGER);
     CREATE INDEX IF NOT EXISTS turns_ps ON turns (player, session, folded);
   `);
@@ -123,6 +125,33 @@ export class Memory {
     const t = text.slice(0, 160);
     const r = this.db.prepare('INSERT INTO activity (player, text, at) VALUES (?, ?, ?)').run(this.player, t, Date.now());
     this.index('activity', r.lastInsertRowid, t);
+  }
+
+  // ---------- long-running projects ----------
+  startProject(name: string, origin: { x: number; y: number; z: number }, steps: { about: string; action: any }[]): number {
+    this.db.prepare("UPDATE projects SET status = 'paused' WHERE player = ? AND status = 'active'").run(this.player);
+    const r = this.db.prepare("INSERT INTO projects (player, name, status, origin, created) VALUES (?, ?, 'active', ?, ?)").run(this.player, name, JSON.stringify(origin), Date.now());
+    const id = Number(r.lastInsertRowid);
+    steps.forEach((st, i) => this.db.prepare("INSERT INTO project_steps (project, idx, action, about, status) VALUES (?, ?, ?, ?, 'todo')").run(id, i, JSON.stringify(st.action), st.about));
+    return id;
+  }
+  activeProject(): any {
+    const p = this.db.prepare("SELECT * FROM projects WHERE player = ? AND status = 'active' ORDER BY id DESC LIMIT 1").get(this.player) as any;
+    if (!p) return null;
+    const steps = this.db.prepare('SELECT * FROM project_steps WHERE project = ? ORDER BY idx').all(p.id) as any[];
+    return { ...p, origin: JSON.parse(p.origin), steps };
+  }
+  lastProject(): any { return this.db.prepare('SELECT * FROM projects WHERE player = ? ORDER BY id DESC LIMIT 1').get(this.player); }
+  setProjectStatus(id: number, status: 'active' | 'paused' | 'cancelled' | 'done') { this.db.prepare('UPDATE projects SET status = ? WHERE id = ?').run(status, id); }
+  updateStep(id: number, status: 'todo' | 'done' | 'failed', note = '') {
+    this.db.prepare('UPDATE project_steps SET status = ?, tries = tries + (CASE WHEN ? = \'todo\' THEN 1 ELSE 0 END), note = ? WHERE id = ?').run(status, status, note.slice(0, 160), id);
+  }
+  projectLine(): string {
+    const p = this.activeProject();
+    if (!p) return '';
+    const done = p.steps.filter((s: any) => s.status === 'done').length;
+    const next = p.steps.find((s: any) => s.status === 'todo');
+    return `PROJECT: ${p.name}, ${done}/${p.steps.length} steps done${next ? `; next: ${next.about}` : ''}`;
   }
 
   /** A highlight worth remembering as a shared adventure ("found our first diamonds"). Code-written, free. */
@@ -217,6 +246,8 @@ export class Memory {
     if (oldChat.length) parts.push('RELATED OLDER CHAT:\n' + oldChat.map((t) => `- ${t}`).join('\n'));
 
     if (unfolded.length) parts.push('RECENT CHAT:\n' + unfolded.reverse().map((t) => `${t.who}: ${t.text}`).join('\n'));
+    const pl = this.projectLine();
+    if (pl) parts.unshift(pl);
     return parts.join('\n\n') || 'MEMORY: (nothing yet)';
   }
 }

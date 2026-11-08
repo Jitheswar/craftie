@@ -437,7 +437,6 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
       const center = newB.position.offset(0.5, 0.5, 0.5);
       const players = Object.values(bot.entities as Record<string, any>).filter((e) => e.type === 'player' && e !== bot.entity && e.position.offset(0, 1.6, 0).distanceTo(center) < 6);
       const nearest = players.sort((a, b) => a.position.distanceTo(center) - b.position.distanceTo(center))[0];
-      if (process.env.CRAFTIE_DEBUG) console.log(`[debug] block ${newB.name} at ${k}: nearest player ${nearest?.username ?? '-'} holding ${nearest?.heldItem?.name ?? nearest?.equipment?.[0]?.name ?? '?'}`);
       if (!nearest || !isPrimary(nearest.username)) return;
       const held = nearest.heldItem?.name ?? nearest.equipment?.[0]?.name;
       if (held && !bot.registry.blocksByName[held] && !/(_bucket|_seeds|sapling)$/.test(held)) return;
@@ -451,7 +450,9 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
     setInterval(async () => {
       if (!bot.entity || unsticking || bot.craftiePause) return;
       const o = followTarget ? Object.values(bot.entities as Record<string, any>).find((x) => x.username === followTarget) : null;
-      const wantsToMove = (o && o.position.distanceTo(bot.entity.position) > 5) || bot.pathfinder?.isMoving?.();
+      // Only while following you (jobs like building handle their own moves and limits; hovering to place blocks isn't "stuck").
+      const jobGoal = bot.pathfinder?.goal && !(bot.pathfinder.goal instanceof (pf as any).goals.GoalFollow);
+      const wantsToMove = !!o && !flying && !jobGoal && o.position.distanceTo(bot.entity.position) > 5;
       const pos = bot.entity.position;
       if (!wantsToMove || !lastPos || pos.distanceTo(lastPos) > 0.6) { lastPos = pos.clone(); stillSince = Date.now(); return; }
       if (Date.now() - stillSince < 4000) return;

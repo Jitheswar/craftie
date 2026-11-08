@@ -23,6 +23,8 @@ export type BuildArgs = {
   /** custom: layers[y][z] = row string, one char per x. Legend char -> block, e.g. "oak_stairs[facing=east]". "_" = must be air, "." = don't care. */
   layers?: string[][]; legend?: Record<string, string>;
   x?: number; y?: number; z?: number;
+  /** Build on the flattest free spot near this point (used by projects to lay out several builds). */
+  near?: { x: number; z: number };
 };
 
 const SOFT = new Set(['air', 'cave_air', 'void_air', 'short_grass', 'grass', 'tall_grass', 'fern', 'large_fern', 'snow', 'dead_bush',
@@ -190,8 +192,8 @@ async function placeFacing(bot: any, ref: { n: Vec3; b: any }, c: Cell, p: Vec3)
  * Find the spot near the bot that needs the least foundation and clearing.
  * Ground level is the median surface height under the footprint.
  */
-function chooseSite(bot: any, w: number, d: number, h: number): Vec3 {
-  const me = bot.entity.position.floored();
+function chooseSite(bot: any, w: number, d: number, h: number, near?: { x: number; z: number }): Vec3 {
+  const me = near ? new Vec3(Math.floor(near.x), bot.entity.position.floored().y, Math.floor(near.z)) : bot.entity.position.floored();
   const surface = (x: number, z: number) => {
     for (let y = me.y + 6; y > me.y - 10; y--) {
       const b = bot.blockAt(new Vec3(x, y, z));
@@ -233,7 +235,7 @@ export async function build(bot: any, a: BuildArgs, signal: AbortSignal): Promis
   if (!cells.length) return 'empty design';
   const me = bot.entity.position.floored();
   const W = Math.max(...cells.map((c) => c.x)) + 1, H = Math.max(...cells.map((c) => c.y)) + 1;
-  const origin = a.x !== undefined ? new Vec3(a.x, a.y ?? me.y, a.z ?? me.z) : chooseSite(bot, W, d, H);
+  const origin = a.x !== undefined ? new Vec3(a.x, a.y ?? me.y, a.z ?? me.z) : chooseSite(bot, W, d, H, a.near);
   // Remember the spot, so a retry builds on the same site instead of starting a new house.
   a.x = origin.x; a.y = origin.y; a.z = origin.z;
   const at = (c: Cell) => origin.offset(c.x, c.y, c.z);
@@ -302,17 +304,27 @@ export async function build(bot: any, a: BuildArgs, signal: AbortSignal): Promis
 
   const oldMoves = bot.pathfinder.movements;
   const moves = new Movements(bot);
-  moves.canDig = false; moves.allowParkour = false; moves.allow1by1towers = true;
+  moves.canDig = false; moves.allowParkour = false;
+  const creative = bot.game.gameMode === 'creative';
+  moves.allow1by1towers = true;                                        // pillar up to reach the roof (cleaned up afterwards)
   moves.scafoldingBlocks = SCAFFOLD.map((n) => bot.registry.itemsByName[n].id);
+  void creative;
   bot.pathfinder.setMovements(moves);
   // Creative flight that doesn't get stuck: flying moves in straight lines and stops at obstacles,
   // so longer trips go up above the build and trees first, across, then down onto the spot.
   // (H = design height, from above)
   const flyLeg = async (to: Vec3, _ms: number) => { await flyTo(bot, to); };
+  // Inside the build site, the way is clear (it builds bottom-up and hovers just above the
+  // current layer), so hops there go straight; only trips from outside go up and over.
+  const inSite = (p: Vec3) => p.x >= origin.x - 4 && p.x <= origin.x + W + 4 && p.z >= origin.z - 4 && p.z <= origin.z + d + 4;
   const flyRoute = async (target: Vec3) => {
     const pos = bot.entity.position;
     const flat = Math.hypot(target.x - pos.x, target.z - pos.z);
-    if (flat < 5 && Math.abs(target.y - pos.y) < 5) return flyLeg(target, 3000);
+    if ((inSite(pos) && inSite(target)) || (flat < 5 && Math.abs(target.y - pos.y) < 5)) {
+      // Rise first if the target is higher (never drag through the layer we just built), then across.
+      if (target.y > pos.y + 0.5) await flyLeg(new Vec3(pos.x, target.y, pos.z), 0);
+      return flyLeg(target, 0);
+    }
     const cruise = Math.max(pos.y, target.y, origin.y + H) + 3;
     if (pos.y < cruise - 0.5) await flyLeg(new Vec3(pos.x, cruise, pos.z), 3000);
     await flyLeg(new Vec3(target.x, cruise, target.z), 4000);
@@ -322,18 +334,7 @@ export async function build(bot: any, a: BuildArgs, signal: AbortSignal): Promis
   // Every walk is capped, so a blocked route can never hang the build.
   const go = async (goal: any, ms = 25_000) => {
     await pauseGate(bot);
-    // Creative: fly there directly. No pathfinding, no scaffolding to clean up afterwards.
-    if (bot.game.gameMode === 'creative' && typeof goal.x === 'number' && !(goal instanceof goals.GoalInvert)) {
-      // Hover just above the block and 1.5 blocks toward the middle of the build (that's empty
-      // space inside), so the block is well within the server's ~4.5 block reach.
-      const mid = new Vec3(origin.x + W / 2, goal.y, origin.z + d / 2);
-      const toMid = new Vec3(mid.x - (goal.x + 0.5), 0, mid.z - (goal.z + 0.5));
-      const step = toMid.norm() > 0.5 ? toMid.normalize().scaled(1.5) : new Vec3(0, 0, 0);
-      const target = new Vec3(goal.x + 0.5 + step.x, goal.y + 1.2, goal.z + 0.5 + step.z);
-      if (target.distanceTo(bot.entity.position) > 1) await timed('fly', () => flyRoute(target));
-      if (target.distanceTo(bot.entity.position) <= 2) return;
-      // Didn't get there (blocked?): fall through and walk.
-    }
+    // (Building walks: flying straight lines kept getting blocked by terrain and trees around the site.)
     let timer: any;
     const limit = new Promise<void>((res) => { timer = setTimeout(() => { bot.pathfinder.stop(); res(); }, ms); });
     try { await timed('walk', () => cancellable(bot, signal, Promise.race([bot.pathfinder.goto(goal), limit])).catch((e: any) => { if (signal.aborted) throw e; })); }
@@ -397,7 +398,9 @@ export async function build(bot: any, a: BuildArgs, signal: AbortSignal): Promis
       pending.splice(pending.indexOf(c), 1);
 
       const feet = bot.entity.position.floored();
-      if (feet.equals(p) || feet.offset(0, 1, 0).equals(p)) await go(new goals.GoalInvert(new goals.GoalNear(p.x, p.y, p.z, 1.5)));
+      // Our body is where the block goes? Creative: float up above that spot. Walking: step aside.
+      const bp = bot.entity.position, overlap = Math.abs(bp.x - (p.x + 0.5)) < 0.8 && Math.abs(bp.z - (p.z + 0.5)) < 0.8 && bp.y > p.y - 1.8 && bp.y < p.y + 1;
+      if (overlap || feet.equals(p) || feet.offset(0, 1, 0).equals(p)) await go(new goals.GoalInvert(new goals.GoalNear(p.x, p.y, p.z, 1.5)));
       else if (bot.entity.position.offset(0, 1.6, 0).distanceTo(p.offset(0.5, 0.5, 0.5)) > 4.3) await go(new goals.GoalNear(p.x, p.y, p.z, 3));
 
       let item = findItem(bot, c.block);

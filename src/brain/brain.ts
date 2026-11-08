@@ -16,7 +16,7 @@ export type BrainConfig = {
   onRestart?: () => void;
 };
 
-type Plan = { say?: string; actions?: Action[]; done?: boolean };
+type Plan = { say?: string; actions?: Action[]; done?: boolean; project?: { name: string; steps: { about: string; action: Action }[] } };
 
 const PERSONALITY_FILE = join(homedir(), '.craftie', 'personality.txt');
 const DEFAULT_PERSONALITY = `Craftie is the player's loyal Minecraft partner: friendly, upbeat and a little witty, proud of its builds,
@@ -57,6 +57,13 @@ HOW TO BE OPTIMAL:
 - Use exact Minecraft ids (oak_log, oak_planks, stick, crafting_table, iron_pickaxe, cobblestone, raw_iron, iron_ingot).
 - Questions or chat with no action needed: answer in "say", "actions": [], "done": true.
 - Never invent coordinates you weren't given; use goto {block} / {player} or explore.
+
+BIG MULTI-SESSION GOALS ("build a village", "make a farm complex", "fortify the base"): don't do them in one go.
+Reply with "project" instead of actions:
+{"say": "...", "project": {"name": "village", "steps": [{"about": "first house", "action": {"skill": "build", "args": {"blueprint": "house", "near": {"dx": 0, "dz": 0}}}}, ...]}, "done": true}
+Each step is ONE action (usually build or obtain). For builds, give "near": {"dx", "dz"} = offset in blocks from where the
+player is now; space buildings ~14 blocks apart and lay them out sensibly (around a center, paths between). 6-20 steps.
+Craftie then works through the steps by itself when idle, across sessions.
 
 BUILD QUALITY (the player wants builds that look good, not boxes):
 - For a house/home/base, use build {blueprint:"house"}. Size it to the request (small: 5x5, normal: 7x9, big: 9x11).
@@ -157,6 +164,17 @@ export class Brain {
     }
     if (/^(pause|pause ai|save usage|low usage|go quiet|quiet mode)$/.test(t)) { this.abort(); this.setAiPaused(true); this.say("Paused my AI to save usage. I'll still follow, defend and do simple commands."); return true; }
     if (/^(resume|unpause|ai on|wake up|back on)$/.test(t)) { this.setAiPaused(false); this.say('AI back on. What do you need?'); return true; }
+    if (/^(project status|how'?s the project( going)?|project)$/.test(t)) {
+      const p = this.memory2.activeProject();
+      if (!p) { this.say('No project going right now.'); return true; }
+      const done = p.steps.filter((s: any) => s.status === 'done').length, failed = p.steps.filter((s: any) => s.status === 'failed').length;
+      const next = p.steps.find((s: any) => s.status === 'todo');
+      this.say(`${p.name}: ${done}/${p.steps.length} done${failed ? `, ${failed} skipped` : ''}${next ? `. Next: ${next.about}` : ''}${this.projectPaused ? ' (paused)' : ''}`);
+      return true;
+    }
+    if (/^pause( the)? project$/.test(t)) { this.projectPaused = true; this.say('Project paused.'); return true; }
+    if (/^(resume|continue)( the)? project$/.test(t)) { this.projectPaused = false; this.say('Back on the project.'); return true; }
+    if (/^(cancel|stop|drop)( the)? project$/.test(t)) { const p = this.memory2.activeProject(); if (p) this.memory2.setProjectStatus(p.id, 'cancelled'); this.say(p ? `Cancelled the ${p.name} project.` : 'No project to cancel.'); return true; }
     if (/^(relax|take a break|stop working|chill)$/.test(t)) { this.working = false; this.abort(); this.say("OK, I'll just hang out."); return true; }
     if (/^(get to work|work|back to work|keep busy)$/.test(t)) { this.working = true; this.say("On it. I'll keep myself useful."); return true; }
     if (/^(stay|stay (here|there|put)|wait( here)?|don'?t follow( me)?|stop following( me)?)$/.test(t)) { this.abort(); this.following = false; this.body.setFollow(null); this.say("OK, I'll stay here."); return true; }
@@ -249,6 +267,7 @@ export class Brain {
    * (food, tools, weapon, armor, a bed, supplies), staying near the player.
    */
   private lastRemark = 0;
+  private projectPaused = false;
 
   /**
    * Environment awareness (plain code, no AI): warn about threats and deal with them, feed the
@@ -318,7 +337,24 @@ export class Brain {
       return;
     }
     const skip = new Set([...this.choreSkip].filter(([, until]) => until > now).map(([k]) => k));
-    const chore = this.body.nextChore(skip);
+    // Basic needs (food, tools) first; then the current project's next step; then other self-chores.
+    const basic = this.body.nextChore(skip);
+    const urgentNeed = basic && /food|pickaxe|weapon|axe|room in my bag/.test(basic.why);
+    const proj = !urgentNeed && !this.projectPaused ? this.memory2.activeProject() : null;
+    const step = proj?.steps.find((st: any) => st.status === 'todo');
+    if (proj && !step) { this.memory2.setProjectStatus(proj.id, 'done'); this.memory2.journal(`finished the "${proj.name}" project!`); this.say(`The ${proj.name} project is finished!`); return; }
+    if (step) {
+      this.log(`project "${proj.name}" step ${step.idx + 1}/${proj.steps.length}: ${step.about}`);
+      await this.startTask('self', `project ${proj.name}: ${step.about}`, [JSON.parse(step.action)]);
+      const last = this.memory.at(-1) ?? '';
+      if (/-> interrupted$/.test(last)) return; // you needed it for something else: not a failure, it'll pick this up later
+      const ok = /-> done$/.test(last);
+      if (ok) this.memory2.updateStep(step.id, 'done');
+      else if (step.tries >= 1) this.memory2.updateStep(step.id, 'failed', this.memory.at(-1) ?? '');
+      else this.memory2.updateStep(step.id, 'todo', this.memory.at(-1) ?? '');
+      return;
+    }
+    const chore = basic;
     if (!chore) return;
     this.log(`chore: ${chore.why} (${chore.item})`); // quiet: no chat for its own chores
     const act = chore.item === '__tidy' ? { skill: 'tidy', args: {} } : { skill: 'obtain', args: { item: chore.item, count: chore.count, nearby: true } };
@@ -424,6 +460,19 @@ export class Brain {
         }
         if (ctl.signal.aborted) return;
         if (plan.say) { this.say(plan.say); this.memory2.addTurn('Craftie', plan.say); }
+        if (plan.project?.steps?.length) {
+          const here = this.body.describeState().match(/pos (-?\d+),(-?\d+),(-?\d+)/)?.slice(1).map(Number) ?? [0, 0, 0];
+          const origin = { x: here[0], y: here[1], z: here[2] };
+          const id = this.memory2.startProject(plan.project.name, origin, plan.project.steps.map((st) => {
+            const a = { ...st.action, args: { ...(st.action?.args ?? {}) } };
+            if (a.args.near && ('dx' in a.args.near || 'dz' in a.args.near)) a.args.near = { x: origin.x + (a.args.near.dx ?? 0), z: origin.z + (a.args.near.dz ?? 0) };
+            return { about: st.about, action: a };
+          }));
+          this.memory2.journal(`started the "${plan.project.name}" project (${plan.project.steps.length} steps)`);
+          this.log(`project #${id} "${plan.project.name}": ${plan.project.steps.length} steps`);
+          outcome = 'done';
+          return;
+        }
         this.memory2.remember((plan as any).remember);
         this.memory2.forget((plan as any).forget);
 
