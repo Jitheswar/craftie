@@ -8,7 +8,7 @@
 import pf from 'mineflayer-pathfinder';
 import { Vec3 } from 'vec3';
 import { logsFor, newPlan, obtain } from './planner.ts';
-import { cancellable, count, epoch, findItem, pauseGate, sleep } from './skills.ts';
+import { cancellable, count, epoch, findItem, flyRoute as flyOver, flyTo, pauseGate, sleep } from './skills.ts';
 
 const { goals, Movements } = pf as any;
 
@@ -308,7 +308,7 @@ export async function build(bot: any, a: BuildArgs, signal: AbortSignal): Promis
   // Creative flight that doesn't get stuck: flying moves in straight lines and stops at obstacles,
   // so longer trips go up above the build and trees first, across, then down onto the spot.
   // (H = design height, from above)
-  const flyLeg = async (to: Vec3, ms: number) => { try { await Promise.race([bot.creative.flyTo(to), sleep(ms)]); } catch {} };
+  const flyLeg = async (to: Vec3, _ms: number) => { await flyTo(bot, to); };
   const flyRoute = async (target: Vec3) => {
     const pos = bot.entity.position;
     const flat = Math.hypot(target.x - pos.x, target.z - pos.z);
@@ -331,7 +331,8 @@ export async function build(bot: any, a: BuildArgs, signal: AbortSignal): Promis
       const step = toMid.norm() > 0.5 ? toMid.normalize().scaled(1.5) : new Vec3(0, 0, 0);
       const target = new Vec3(goal.x + 0.5 + step.x, goal.y + 1.2, goal.z + 0.5 + step.z);
       if (target.distanceTo(bot.entity.position) > 1) await timed('fly', () => flyRoute(target));
-      return;
+      if (target.distanceTo(bot.entity.position) <= 2) return;
+      // Didn't get there (blocked?): fall through and walk.
     }
     let timer: any;
     const limit = new Promise<void>((res) => { timer = setTimeout(() => { bot.pathfinder.stop(); res(); }, ms); });

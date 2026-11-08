@@ -11,12 +11,15 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Vec3 } from 'vec3';
 import { canUseCommands, describe, vocab } from './perception.ts';
-import { equipBest, skills } from './skills.ts';
+import { equipBest, flyRoute, flyTo, skills } from './skills.ts';
 import './autonomy.ts'; // adds obtain + build to skills
 import { nextChore } from './chores.ts';
 import { findTreasure } from './treasure.ts';
 
 const { pathfinder, Movements: BaseMovements } = pf as any;
+
+// Blocks that (almost) never generate naturally: someone built them. Never break these to get somewhere.
+const PLAYER_MADE = /_planks$|_stairs$|_slab$|glass|_wool$|_carpet$|bricks?$|concrete|_door$|trapdoor|torch|lantern|chest|furnace|crafting_table|_bed$|fence|_wall$|smooth_|polished_|chiseled_|cut_|bookshelf|_sign$|banner|barrel|smoker|anvil|hay_block|glazed|_block$|ladder|scaffolding|rail$|_terracotta$|beacon|enchanting|brewing|jukebox|note_block|lectern|loom|composter|bell$|candle|flower_pot|item_frame|shulker/;
 
 /**
  * The pathfinder thinks you can't climb out of water: when deciding if a jump onto the shore is
@@ -104,6 +107,9 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
     if (line && bot?.entity) bot.chat(line); // private lines are queued as "/msg <player> ..." already
   }, 700);
 
+  // Blocks the player placed, so Craftie never breaks *their* builds (saved per world).
+  const ownerBuilt = new Set<string>();
+
   // Home + chest memory, saved per world (keyed by LAN world name or server address).
   let worldKey = '';
   const memFile = () => join(homedir(), '.craftie', 'worlds', worldKey.replace(/[^\w.-]+/g, '_') + '.json');
@@ -112,6 +118,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
       const m = JSON.parse(readFileSync(memFile(), 'utf8'));
       bot.craftieHome = m.home ?? null;
       bot.craftieChests = new Map(Object.entries(m.chests ?? {}));
+      ownerBuilt.clear(); for (const k of m.ownerBuilt ?? []) ownerBuilt.add(k);
     } catch {}
   };
   let saveTimer: any;
@@ -120,7 +127,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
     saveTimer = setTimeout(() => {
       try {
         mkdirSync(join(homedir(), '.craftie', 'worlds'), { recursive: true });
-        writeFileSync(memFile(), JSON.stringify({ home: bot.craftieHome ?? null, chests: Object.fromEntries(bot.craftieChests ?? []) }, null, 1));
+        writeFileSync(memFile(), JSON.stringify({ home: bot.craftieHome ?? null, chests: Object.fromEntries(bot.craftieChests ?? []), ownerBuilt: [...ownerBuilt].slice(-50000) }));
       } catch {}
     }, 2000);
   };
@@ -169,6 +176,9 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
       moves.scafoldingBlocks = ['dirt', 'cobblestone', 'cobbled_deepslate', 'netherrack', 'stone', 'andesite', 'diorite', 'granite', 'tuff', 'blackstone']
         .map((n) => bot.registry.itemsByName[n]?.id).filter((x: any) => x !== undefined);
       moves.allow1by1towers = true;
+      // Walking may dig through blocks to reach you, but never through blocks *you* placed.
+      // (Other people's blocks don't count: someone could use them to wall Craftie off from you.)
+      moves.exclusionAreasBreak.push((blk: any) => (ownerBuilt.has(`${blk.position.x},${blk.position.y},${blk.position.z}`) ? 100 : 0));
       bot.pathfinder.setMovements(moves);
       // Bounded path search: unbounded searches through solid ground can eat gigabytes of memory.
       bot.pathfinder.thinkTimeout = 6000;
@@ -260,23 +270,55 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
       const inWater = bot.entity.isInWater;
       if (inWater && air < 10 && !surfacing) { surfacing = true; console.log('[mc] low on air, surfacing'); }
       if (surfacing && (!inWater || air >= 19)) surfacing = false;
+      // Sprinting in water switches to the horizontal "swimming" pose, which looks like flying.
+      // Swim upright like a player holding W + space: no sprint in or just above water.
+      const feet = bot.blockAt(bot.entity.position.offset(0, -0.2, 0))?.name;
+      if (inWater || feet === 'water') bot.setControlState('sprint', false);
       if (!inWater) return;
       const goal = bot.pathfinder?.goal;
       let goalBelow = goal && typeof goal.y === 'number' && goal.y < bot.entity.position.y - 2;
       // Following someone who's swimming underwater: dive with them while there's plenty of air.
-      if (!goalBelow && followTarget && !goal) {
+      // (Players dive by holding sneak; the bot's physics ignores sneak in water, so apply the
+      //  same downward push directly, the way a sneaking swimmer sinks.)
+      if (!goalBelow && followTarget && !goal && !surfacing) {
         const o = Object.values(bot.entities as Record<string, any>).find((x) => x.username === followTarget);
-        if (o && o.position.y < bot.entity.position.y - 1.5 && air >= 10) goalBelow = true;
+        // Only when they're actually in the water (not just lower down on a beach or hillside).
+        const oInWater = o && ['water', 'bubble_column'].includes(bot.blockAt(o.position.offset(0, 0.5, 0))?.name ?? '');
+        if (o && oInWater && o.position.y < bot.entity.position.y - 1.2 && air >= 10) {
+          goalBelow = true;
+          bot.setControlState('jump', false);
+          bot.entity.velocity.y = Math.max(bot.entity.velocity.y - 0.04, -0.3);
+        }
       }
-      // Float and swim at the surface like a player holding space, unless the job is underwater.
-      if (surfacing || !goalBelow) bot.setControlState('jump', true);
+      // Float at the surface like a player tapping space: push up only while the water is up to
+      // the chest, let go once it's lower. Holding jump all the time makes it bob in and out.
+      if (surfacing) bot.setControlState('jump', true);
+      else if (!goalBelow) {
+        const chest = bot.blockAt(bot.entity.position.offset(0, 1.1, 0))?.name === 'water';
+        bot.setControlState('jump', chest || bot.entity.isCollidedHorizontally);
+      }
     });
 
+    /** Break natural blocks hemming us in (above, and toward the target). Never player-made ones. */
+    const breakOut = async (toward: any): Promise<number> => {
+      const me = bot.entity.position.floored();
+      const d = toward.minus(bot.entity.position); const len = Math.hypot(d.x, d.z) || 1;
+      const sx = Math.round(d.x / len), sz = Math.round(d.z / len);
+      const spots = [me.offset(0, 2, 0), me.offset(0, 3, 0), me.offset(sx, 1, sz), me.offset(sx, 0, sz), me.offset(sx, 2, sz)];
+      let n = 0;
+      for (const p of spots) {
+        const b = bot.blockAt(p);
+        if (!b || b.boundingBox !== 'block' || ownerBuilt.has(`${p.x},${p.y},${p.z}`) || b.name === 'bedrock' || b.hardness < 0) continue;
+        try { await bot.dig(b, true); n++; } catch {}
+      }
+      return n;
+    };
+
     // Creative: fly with the player when they fly (or are far away), land when they land.
-    let flying = false, flyBusy = false;
+    let flying = false, flyBusy = false, flyNote = '', flyFails = 0, noFlyUntil = 0, lastFlyTp = 0;
     const groundBelow = (p: any) => { for (let dy = 0; dy < 6; dy++) { const b = bot.blockAt(p.offset(0, -dy - 0.5, 0)); if (b && b.boundingBox === 'block') return dy; } return 99; };
     setInterval(async () => {
-      if (!followTarget || !bot.entity || bot.game.gameMode !== 'creative' || bot.craftiePause || flyBusy) {
+      if (!followTarget || !bot.entity || bot.game.gameMode !== 'creative' || bot.craftiePause || flyBusy || Date.now() < noFlyUntil) {
         if (process.env.CRAFTIE_DEBUG && followTarget && bot.entity && Date.now() % 4000 < 400) console.log(`[mc] fly check: mode=${bot.game.gameMode} target=${followTarget} busy=${flyBusy}`);
         return;
       }
@@ -290,12 +332,32 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
         const back = bot.entity.position.minus(e.position); back.y = 0;
         const off = back.norm() > 0.1 ? back.normalize().scaled(3) : new Vec3(3, 0, 0);
         const target = e.position.plus(off).offset(0, 0.5, 0);
-        if (target.distanceTo(bot.entity.position) < 2) return;
+        if (target.distanceTo(bot.entity.position) < 2.5) return; // close enough: hold position
         flyBusy = true; flying = true;
-        try { await bot.creative.flyTo(target); } catch (err: any) { if (process.env.CRAFTIE_DEBUG) console.log('[mc] flyTo failed:', err.message); } finally { flyBusy = false; }
+        flyNote = `flying to ${target.floored()} (dist ${dist.toFixed(0)}) at ${new Date().toISOString().slice(11, 19)}`;
+        // Far away and allowed to: just teleport to them (what a player with cheats would do).
+        if (dist > 40 && canUseCommands(bot) && Date.now() - lastFlyTp > 8000) {
+          lastFlyTp = Date.now(); flyBusy = false;
+          bot.chat(`/tp ${bot.username} ${followTarget}`);
+          return;
+        }
+        // Close: straight there. Far: up over the terrain, across, and down (never through hills).
+        const before = bot.entity.position.clone();
+        try { if (dist > 8) await flyRoute(bot, target); else await flyTo(bot, target, 2500); } finally { flyBusy = false; }
+        // Didn't get anywhere (boxed in, or the server snapped us back): break out, then retry.
+        if (bot.entity.position.distanceTo(before) < 1 && target.distanceTo(bot.entity.position) > 3) {
+          const dug = await breakOut(target);
+          if (dug) { flyNote += ` | broke ${dug} block(s) in the way`; return; }
+          if (++flyFails >= 2) {
+            flyFails = 0; flying = false; noFlyUntil = Date.now() + 4000; // walk a moment, then fly again
+            try { bot.creative.stopFlying(); } catch {}
+            console.log('[mc] flying is blocked here; walking for a bit');
+          }
+        } else flyFails = 0;
       } else if (flying && !airborne && !wellAbove && dist <= 6) {
-        flying = false;
-        try { bot.creative.stopFlying(); } catch {}
+        // Only land when there's ground right under us; otherwise hover next to the player
+        // (stopping in mid-air means falling, then flying back up, over and over).
+        if (groundBelow(bot.entity.position) <= 1) { flying = false; try { bot.creative.stopFlying(); } catch {} }
       }
     }, 400);
 
@@ -310,25 +372,94 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
     const solidAt = (v: any) => { const b = bot.blockAt(v); return b && b.boundingBox === 'block'; };
     const dangerAt = (v: any) => /lava|fire|magma|cactus|powder_snow/.test(bot.blockAt(v)?.name ?? '');
 
+    /** Turn the head toward a point gradually (maxStep radians per tick), like a player. */
+    const lookSmooth = (p: any, maxStep: number, levelEyes = false) => {
+      const eye = bot.entity.position.offset(0, 1.62, 0), d = p.minus(eye);
+      const wantYaw = Math.atan2(-d.x, -d.z);
+      let wantPitch = Math.atan2(d.y, Math.hypot(d.x, d.z));
+      if (levelEyes) wantPitch = Math.max(-0.25, Math.min(0.15, wantPitch * 0.4));
+      let dy = wantYaw - bot.entity.yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy)); // shortest way round
+      const dp = wantPitch - bot.entity.pitch;
+      if (Math.abs(dy) < 0.02 && Math.abs(dp) < 0.02) return; // already there: don't jitter
+      bot.look(bot.entity.yaw + Math.max(-maxStep, Math.min(maxStep, dy)), bot.entity.pitch + Math.max(-maxStep, Math.min(maxStep, dp)), true);
+    };
+
     // Steering runs every tick, after the pathfinder, while following in steer mode.
     bot.on('physicsTick', () => {
+      // Hovering/flying with the player (creative): still look at them.
+      if (flying && followTarget && bot.entity && !bot.craftiePause) {
+        const o = ownerEntity();
+        if (o) lookSmooth(o.position.offset(0, 1.5, 0), 0.1);
+        return;
+      }
       if (mode !== 'steer' || !followTarget || !bot.entity || bot.craftiePause || flying || gettingBlocks) return;
       if (bot.pathfinder.goal && !isFollowGoal()) return; // a job is using the pathfinder
       const e = ownerEntity();
       if (!e) { stopSteer(); return; }
       const me = bot.entity.position, flat = Math.hypot(e.position.x - me.x, e.position.z - me.z);
-      if (flat < 3) { stopSteer(); return; }
-      bot.lookAt(e.position.offset(0, 1.6, 0), true);
+      if (flat < 3) { stopSteer(); lookSmooth(e.position.offset(0, 1.5, 0), 0.08); return; } // calmly look at you
+      // Walking: face where we're going, eyes near the horizon (not staring at your face every tick).
+      lookSmooth(e.position.offset(0, 1.2, 0), 0.25, true);
       // Look one step ahead: don't walk off a big drop or into lava; hop up single blocks.
       const yaw = bot.entity.yaw, ahead = me.offset(-Math.sin(yaw) * 0.8, 0, -Math.cos(yaw) * 0.8).floored();
-      let drop = 0; while (drop < 5 && !solidAt(ahead.offset(0, -drop - 1, 0)) && !bot.entity.isInWater) drop++;
+      const waterAt = (v: any) => bot.blockAt(v)?.name === 'water';
+      // Deep water ahead isn't a cliff: it's somewhere to swim.
+      let drop = 0; while (drop < 5 && !solidAt(ahead.offset(0, -drop - 1, 0)) && !waterAt(ahead.offset(0, -drop - 1, 0)) && !waterAt(ahead.offset(0, -drop, 0)) && !bot.entity.isInWater) drop++;
       if ((drop >= 4 && e.position.y > me.y - drop + 1) || dangerAt(ahead) || dangerAt(ahead.offset(0, -1, 0))) { stopSteer(); mode = 'path'; pathUntil = Date.now() + 6000; return; }
       bot.setControlState('forward', true);
-      bot.setControlState('sprint', flat > 8 && !bot.entity.isInWater);
+      bot.setControlState('sprint', flat > 8 && !bot.entity.isInWater && bot.blockAt(me.offset(0, -0.2, 0))?.name !== 'water');
       if ((solidAt(ahead) && !solidAt(ahead.offset(0, 1, 0)) && !solidAt(me.offset(0, 2, 0).floored())) || bot.entity.isCollidedHorizontally)
         bot.setControlState('jump', true);
-      else if (!bot.entity.isInWater) bot.setControlState('jump', false);
+      else if (!bot.entity.isInWater) bot.setControlState('jump', false); // in water the float reflex decides
     });
+
+    // Who placed this block? If it appeared next to the player while they held a block, and nobody
+    // else was closer, it's theirs. If a remembered block of theirs disappears, forget it.
+    bot.on('blockUpdate', (oldB: any, newB: any) => {
+      if (!newB || !primary) return;
+      const k = `${newB.position.x},${newB.position.y},${newB.position.z}`;
+      const wasEmpty = !oldB || ['air', 'cave_air', 'water', 'short_grass', 'grass', 'snow'].includes(oldB.name);
+      if (newB.name === 'air' || newB.name === 'cave_air') { if (ownerBuilt.delete(k)) saveMemory(); return; }
+      if (!wasEmpty || newB.boundingBox !== 'block') return;
+      const center = newB.position.offset(0.5, 0.5, 0.5);
+      const players = Object.values(bot.entities as Record<string, any>).filter((e) => e.type === 'player' && e.position.offset(0, 1.6, 0).distanceTo(center) < 6);
+      const nearest = players.sort((a, b) => a.position.distanceTo(center) - b.position.distanceTo(center))[0];
+      if (!nearest || !isPrimary(nearest.username)) return;
+      const held = nearest.heldItem?.name ?? nearest.equipment?.[0]?.name;
+      if (held && !bot.registry.blocksByName[held] && !/(_bucket|_seeds|sapling)$/.test(held)) return;
+      ownerBuilt.add(k);
+      saveMemory();
+    });
+
+    // Diagnostics: a small status file, so "where is it / what is it doing" can be answered from outside.
+    setInterval(() => {
+      if (!bot.entity) return;
+      const o = followTarget ? Object.values(bot.entities as Record<string, any>).find((x) => x.username === followTarget) : null;
+      const st = {
+        at: new Date().toISOString(), pos: bot.entity.position.floored(), mode: bot.game.gameMode, health: bot.health, food: bot.food,
+        following: followTarget, followMode: mode, flying, gettingBlocks, playerVisible: !!o,
+        playerPos: o?.position.floored() ?? lastSeen.get(followTarget ?? '') ?? null,
+        distance: o ? +o.position.distanceTo(bot.entity.position).toFixed(1) : null,
+        flyNote, flyBusy, pathGoal: bot.pathfinder?.goal?.constructor?.name ?? null, moving: bot.pathfinder?.isMoving?.() ?? false, paused: !!bot.craftiePause,
+      };
+      try { writeFileSync(join(homedir(), '.craftie', 'status.json'), JSON.stringify(st, null, 1)); } catch {}
+    }, 3000);
+
+    // Match the player's game mode (creative <-> survival) when cheats allow it.
+    let toldNoCheats = false, lastModeSwitch = 0;
+    setInterval(() => {
+      if (!bot.entity || !primary) return;
+      const me = Object.values(bot.players as Record<string, any>).find((p) => p.username?.toLowerCase() === primary);
+      const want = ({ 0: 'survival', 1: 'creative' } as Record<number, string>)[me?.gamemode];
+      if (!want || want === bot.game.gameMode || Date.now() - lastModeSwitch < 5000) return;
+      if (!canUseCommands(bot)) {
+        if (!toldNoCheats) { toldNoCheats = true; outQueue.push(`/msg ${me.username} You're in ${want} but I can't switch modes (cheats are off in this world).`); }
+        return;
+      }
+      lastModeSwitch = Date.now();
+      console.log(`[mc] ${me.username} is in ${want}: switching to ${want} too`);
+      bot.chat(`/gamemode ${want}`);
+    }, 2000);
 
     // Gear check while idle: best armor on and best weapon in hand, ready for trouble.
     let gearCheck = 0;
@@ -370,7 +501,10 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
             gettingBlocks = true;
             const dirt = bot.findBlocks({ matching: ['dirt', 'grass_block'].map((n) => bot.registry.blocksByName[n].id), maxDistance: 8, count: Math.ceil(above + 4) });
             console.log(`[mc] ${followTarget} went up ${Math.round(above)} blocks; grabbing ${dirt.length} dirt to climb after them`);
-            bot.collectBlock.collect(dirt.map((p: any) => bot.blockAt(p)).filter(Boolean), { ignoreNoPath: true }).catch(() => {}).finally(() => { gettingBlocks = false; });
+            // The mining library can wait forever on a drop it can't reach: never let that freeze following.
+            const giveUp = new Promise<void>((r) => setTimeout(() => { try { bot.collectBlock.cancelTask?.(); } catch {} bot.pathfinder.stop(); r(); }, 15_000));
+            Promise.race([bot.collectBlock.collect(dirt.map((p: any) => bot.blockAt(p)).filter(Boolean), { ignoreNoPath: true }).catch(() => {}), giveUp])
+              .finally(() => { gettingBlocks = false; });
             return;
           }
         }

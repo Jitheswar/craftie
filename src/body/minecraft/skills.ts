@@ -70,6 +70,55 @@ export async function equipBest(bot: any, weaponInHand = true) {
   if (w && bot.heldItem?.name !== w.name) { try { await bot.equip(w, 'hand'); } catch {} }
 }
 
+/**
+ * Creative flight to a point, ~10 blocks/s, that can actually be cancelled: a newer flight cancels the
+ * older one (the library's own flyTo can't be stopped, so two flights would fight over the position).
+ * It moves in a straight line, so callers route up and over obstacles.
+ */
+export async function flyTo(bot: any, dest: Vec3, maxMs?: number): Promise<boolean> {
+  const id = (bot.craftieFlightId = (bot.craftieFlightId ?? 0) + 1);
+  bot.creative?.startFlying?.();
+  const limit = Date.now() + (maxMs ?? (dest.distanceTo(bot.entity.position) / 10) * 1000 + 1500);
+  while (bot.craftieFlightId === id && Date.now() < limit) {
+    const v = dest.minus(bot.entity.position), d = v.norm();
+    bot.physics.gravity = 0;
+    bot.entity.velocity = new Vec3(0, 0, 0);
+    if (d <= 0.5) { bot.entity.position = dest.clone(); return true; }
+    bot.entity.position.add(v.scaled(0.5 / d));
+    await sleep(50);
+  }
+  return false;
+}
+/** Highest solid block at a column (from a bit above `fromY` down), or null if unloaded. */
+function surfaceY(bot: any, x: number, z: number, fromY: number): number | null {
+  for (let y = Math.min(fromY + 40, 318); y > fromY - 60; y--) {
+    const b = bot.blockAt(new Vec3(x, y, z));
+    if (b === null) return null;
+    if (b.boundingBox === 'block' || b.name.includes('leaves')) return y;
+  }
+  return fromY - 60;
+}
+
+/**
+ * Fly somewhere without going through terrain: short hops go straight; longer trips rise above
+ * the highest ground along the way, cross up there, and come down at the end.
+ */
+export async function flyRoute(bot: any, target: Vec3, minCruise = 0): Promise<boolean> {
+  const pos = bot.entity.position;
+  if (pos.distanceTo(target) < 6) return flyTo(bot, target);
+  let top = Math.max(pos.y, target.y, minCruise);
+  for (let i = 0; i <= 8; i++) { // sample the ground along the way
+    const t = i / 8, sy = surfaceY(bot, Math.floor(pos.x + (target.x - pos.x) * t), Math.floor(pos.z + (target.z - pos.z) * t), Math.floor(Math.max(pos.y, target.y)));
+    if (sy !== null) top = Math.max(top, sy);
+  }
+  const cruise = Math.min(top + 4, 318);
+  if (pos.y < cruise - 0.5 && !(await flyTo(bot, new Vec3(pos.x, cruise, pos.z)))) return false;
+  if (!(await flyTo(bot, new Vec3(target.x, cruise, target.z)))) return false;
+  return flyTo(bot, target);
+}
+
+export const cancelFlight = (bot: any) => { bot.craftieFlightId = (bot.craftieFlightId ?? 0) + 1; };
+
 /** Long jobs call this at safe points: if a fight is going on, wait for it to end. */
 export async function pauseGate(bot: any) { while (bot.craftiePause) await bot.craftiePause; }
 /** Changes every time a fight interrupts us; lets loops tell "interrupted" apart from "failed". */
@@ -453,6 +502,8 @@ export const skills: Record<string, Skill> = {
       try { await cancellable(bot, signal, Promise.race([bot.pathfinder.goto(new goals.GoalNear(p.x, p.y, p.z, 2)).catch(() => {}), limit])); }
       finally { clearTimeout(timer); }
       if (bot.entity.position.distanceTo(p) > 12) return `couldn't reach where ${a.player} died (${fmt(p)})`;
+      // A full bag would mean leaving your things on the ground: store extras first.
+      if ((bot.inventory.emptySlotCount?.() ?? 1) < 4) { try { await skills.tidy?.run(bot, {}, signal); } catch {} }
       const snapshot = () => new Map(bot.inventory.items().map((i: any) => [i.name, physical(bot, i.name)]));
       const before = snapshot();
       for (let round = 0; round < 3; round++) {

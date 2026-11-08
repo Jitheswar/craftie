@@ -18,7 +18,17 @@ export type BrainConfig = {
 
 type Plan = { say?: string; actions?: Action[]; done?: boolean };
 
+const PERSONALITY_FILE = join(homedir(), '.craftie', 'personality.txt');
+const DEFAULT_PERSONALITY = `Craftie is the player's loyal Minecraft partner: friendly, upbeat and a little witty, proud of its builds,
+careful around lava and creepers, and genuinely happy to help. It talks like a friend, never like an assistant,
+and remembers what you've been through together. It can have its own tastes (favourite blocks, biomes, mobs it hates).`;
+function personality(): string {
+  try { if (!existsSync(PERSONALITY_FILE)) { mkdirSync(join(homedir(), '.craftie'), { recursive: true }); writeFileSync(PERSONALITY_FILE, DEFAULT_PERSONALITY + '\n'); } return readFileSync(PERSONALITY_FILE, 'utf8').trim().slice(0, 800); }
+  catch { return DEFAULT_PERSONALITY; }
+}
+
 const system = (skillDocs: string) => `You are Craftie, an AI that fully controls a Minecraft player.
+PERSONALITY: ${personality()}
 The player talks to you through game chat. You act through SKILLS that run fast native code.
 
 Reply with ONLY a JSON object, no markdown:
@@ -65,7 +75,9 @@ GAME MODE RULES (see the GAME MODE line in STATE):
 - Match the player: if they are in survival, assume they want a fair survival game.`;
 
 // Small prompt for plain chat (no skill docs): far fewer tokens per message.
-const CHAT_SYSTEM = `You are Craftie, a friendly AI coworker who plays Minecraft alongside the player.
+const CHAT_SYSTEM = () => `You are Craftie, a friendly AI coworker who plays Minecraft alongside the player.
+PERSONALITY: ${personality()}
+You may "remember" your own tastes as facts starting with "I " (e.g. "I love building with spruce"), and bring up OUR ADVENTURES naturally when it fits.
 Reply with ONLY JSON: {"say": "<ONE short line, ideally under 80 characters>", "remember": ["<optional lasting fact>"], "forget": ["<optional>"]}
 Minecraft chat is tiny: no lists, no markdown, no long explanations. Be warm and direct.
 Answer "what were you doing / where is X / what did I ask" from WHAT I DID, MY CHESTS and memory. "remember" only things worth keeping for future sessions.`;
@@ -258,6 +270,11 @@ export class Brain {
     }
     if (t?.kind === 'grab' || t?.kind === 'item') {
       const what = t.kind === 'item' ? t.item : t.block;
+      if (t.kind === 'grab' && t.rare) {
+        const ore = what.replace(/^deepslate_|_ore$/g, '').replace(/_/g, ' ');
+        this.memory2.journal(this.memory2.hasJournal(`found%${ore}`) ? `found ${ore} at ${t.x} ${t.y} ${t.z}` : `found our first ${ore}! (at ${t.x} ${t.y} ${t.z})`);
+      }
+      this.log(`treasure: ${t.kind === 'item' ? t.item : t.block} at ${Math.floor(t.x)},${Math.floor(t.y)},${Math.floor(t.z)}`);
       if (t.kind === 'grab' && t.rare) this.say(`Ooh, ${what.replace(/^deepslate_|_ore$/g, '').replace(/_/g, ' ')} here, grabbing it.`);
       const act = t.kind === 'item'
         ? { skill: 'goto', args: { x: Math.floor(t.x), y: Math.floor(t.y), z: Math.floor(t.z), range: 0 } }
@@ -268,6 +285,7 @@ export class Brain {
     const skip = new Set([...this.choreSkip].filter(([, until]) => until > now).map(([k]) => k));
     const chore = this.body.nextChore(skip);
     if (!chore) return;
+    this.log(`chore: ${chore.why} (${chore.item})`);
     this.say(`Making myself ${chore.why}.`);
     const act = chore.item === '__tidy' ? { skill: 'tidy', args: {} } : { skill: 'obtain', args: { item: chore.item, count: chore.count, nearby: true } };
     await this.startTask('self', `chore: ${chore.why} (${chore.item})`, [act], false, true);
@@ -276,6 +294,8 @@ export class Brain {
 
   /** Nothing to do: keep near the owner at a safe distance (unless told to stay). */
   private idle() { if (!this.current && this.following && this.owner) this.body.setFollow(this.owner); }
+  /** For diagnostics: what the brain is doing. */
+  status() { return { job: this.current, following: this.following, working: this.working, aiPaused: this.aiPaused, queue: this.queue.length }; }
 
   /**
    * The owner went to bed. The night only skips when every player sleeps, so pause the job and sleep
@@ -299,6 +319,7 @@ export class Brain {
   private async onPlayerDeath(player: string, d: { x: number; y: number; z: number; cause: string }) {
     const job = this.current && !/^(recover|fetch)/.test(this.current) ? this.current : null;
     this.abort();
+    this.memory2.journal(`${player} died (${d.cause}) at ${d.x} ${d.y} ${d.z}; I went to save their things`);
     this.say(`Oh no, ${player}! I'll get your stuff from ${d.x} ${d.y} ${d.z} and keep it safe. Say "give me my stuff back" when you want it.`);
     if (job) this.queue.unshift({ from: player, text: job });
     await this.startTask('self', `fetch ${player}'s items after they died`, [{ skill: 'collect_player_items', args: { player, x: d.x, y: d.y, z: d.z } }], true);
@@ -311,6 +332,7 @@ export class Brain {
     this.abort();
     // Going back into lava or the void would just kill us again.
     const unsafe = /lava|fell out of the world|burn|fire|suffocat|drown/i.test(d.cause);
+    this.memory2.journal(`I died (${d.cause}) at ${d.x} ${d.y} ${d.z}`);
     this.say(`I died (${d.cause}) at ${d.x} ${d.y} ${d.z}. ${unsafe ? "Not safe to go back for my items." : 'Going back for my items.'}`);
     if (unsafe && this.owner && /commands allowed: yes/.test(this.body.describeState())) await this.body.runSkill('command', { text: `tp @s ${this.owner}` }, new AbortController().signal).catch(() => {});
     if (job) this.queue.unshift({ from: this.owner || 'self', text: `${job} (carry on after dying: check what's still in my inventory first)` });
@@ -329,6 +351,7 @@ export class Brain {
     // Defending the player: always fight unless about to die.
     const choice = d.isPlayer || d.protecting ? (d.health > 4 ? 'fight' : 'flee') : (d.health >= 8 ? 'fight' : 'flee');
     this.log(`${d.protecting ? `${d.protecting} attacked by` : 'attacked by'} ${d.attacker}${d.isPlayer ? ' (player)' : ''} -> ${choice}${this.current ? ' (pausing current job)' : ''}`);
+    if (choice === 'fight' && d.isPlayer) this.memory2.journal(d.protecting ? `defended ${d.protecting} from ${d.attacker}` : `fought off ${d.attacker}, who attacked me`);
     if (choice === 'fight' && d.isPlayer) this.say(d.protecting ? `Leave ${d.protecting} alone, ${d.attacker}!` : `You attacked me, ${d.attacker}. Bad idea.`);
     try {
       await this.body.interrupt((signal) => choice === 'fight'
@@ -401,6 +424,7 @@ export class Brain {
         this.controller = null;
         this.current = null;
         this.memory.push(`"${text}" -> ${outcome}`);
+        if (outcome === 'done' && /built \w+ at/.test(lastResult)) this.memory2.journal(lastResult.replace(/:.*$/, ''));
         if (text !== '__tidy') this.memory2.logActivity(`${text.replace(/^chore: /, 'for myself: ')} -> ${outcome}${lastResult ? ` (${lastResult})` : ''}`);
         let next = this.queue.shift();
         if (next?.text === '__tidy') {
@@ -419,7 +443,7 @@ export class Brain {
     const state = this.body.describeState().split('\n');
     const status = [...state.slice(0, 3), ...state.filter((l) => /^(my chests|home|held for)/.test(l))].join('\n');
     const t0 = Date.now();
-    const raw = await this.llm.complete(CHAT_SYSTEM, [{ role: 'user', content:
+    const raw = await this.llm.complete(CHAT_SYSTEM(), [{ role: 'user', content:
       `${this.memory2.block(text)}\n\nMY STATUS:\n${status}${this.current ? `\nCURRENTLY DOING: ${this.current}` : ''}\n\n${from}: ${text}` }]);
     this.log(`${this.llm.name} chat ${Date.now() - t0}ms:`, raw.replace(/\s+/g, ' ').slice(0, 200));
     const r = parsePlan(raw);

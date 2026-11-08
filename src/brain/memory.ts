@@ -34,6 +34,7 @@ function open(): DatabaseSync {
     CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY, player TEXT, text TEXT, at INTEGER);
     CREATE TABLE IF NOT EXISTS facts (id INTEGER PRIMARY KEY, player TEXT, text TEXT, at INTEGER, UNIQUE (player, text));
     CREATE VIRTUAL TABLE IF NOT EXISTS mem_fts USING fts5(kind UNINDEXED, ref UNINDEXED, player UNINDEXED, text);
+    CREATE TABLE IF NOT EXISTS journal (id INTEGER PRIMARY KEY, player TEXT, text TEXT, at INTEGER);
     CREATE INDEX IF NOT EXISTS turns_ps ON turns (player, session, folded);
   `);
   return (shared = db);
@@ -124,6 +125,20 @@ export class Memory {
     this.index('activity', r.lastInsertRowid, t);
   }
 
+  /** A highlight worth remembering as a shared adventure ("found our first diamonds"). Code-written, free. */
+  journal(text: string) {
+    const t = text.slice(0, 160);
+    const last = this.db.prepare('SELECT text FROM journal WHERE player = ? ORDER BY id DESC LIMIT 1').get(this.player) as any;
+    if (last?.text === t) return;
+    const r = this.db.prepare('INSERT INTO journal (player, text, at) VALUES (?, ?, ?)').run(this.player, t, Date.now());
+    this.index('journal', r.lastInsertRowid, t);
+  }
+
+  /** Has this kind of highlight happened before? (for "first diamonds" style entries) */
+  hasJournal(like: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM journal WHERE player = ? AND text LIKE ? LIMIT 1').get(this.player, `%${like}%`);
+  }
+
   remember(facts: unknown) {
     if (!Array.isArray(facts)) return;
     for (const f of facts) {
@@ -178,6 +193,14 @@ export class Memory {
       .map((r) => this.db.prepare('SELECT text, at FROM activity WHERE id = ?').get(r.ref) as any).filter(Boolean);
     const acts = [...recentAct, ...oldAct];
     if (acts.length) parts.push('WHAT I DID (newest first):\n' + acts.map((a) => `- ${ago(a.at)}: ${a.text}`).join('\n'));
+
+    // Adventures: the two newest, plus older ones that match the message.
+    const newestJ = this.db.prepare('SELECT id, text, at FROM journal WHERE player = ? ORDER BY id DESC LIMIT 2').all(this.player) as any[];
+    const jIds = new Set(newestJ.map((j) => j.id));
+    const relJ = this.search(q, 'journal', 3).filter((r) => !jIds.has(r.ref))
+      .map((r) => this.db.prepare('SELECT text, at FROM journal WHERE id = ?').get(r.ref) as any).filter(Boolean);
+    const adv = [...newestJ, ...relJ];
+    if (adv.length) parts.push('OUR ADVENTURES:\n' + adv.map((j) => `- ${ago(j.at)}: ${j.text}`).join('\n'));
 
     // Summaries: this session's, or the last session's when we've just started a new one.
     const cur = this.db.prepare('SELECT text FROM summaries WHERE player = ? AND session = ?').get(this.player, this.session) as any;

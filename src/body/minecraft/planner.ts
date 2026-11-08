@@ -121,6 +121,37 @@ async function fromChests(bot: any, item: string, need: number, p: Plan): Promis
   }
 }
 
+// Low-value stuff that's fine to drop when the bag is full (keeping a little of each).
+const JUNK: Record<string, number> = {
+  dirt: 16, gravel: 0, sand: 16, rotten_flesh: 0, poisonous_potato: 0, spider_eye: 0, wheat_seeds: 0, beetroot_seeds: 0,
+  andesite: 0, diorite: 0, granite: 0, tuff: 0, cobbled_deepslate: 32, netherrack: 16, flint: 0, bone: 4, string: 8, stick: 16,
+};
+
+/**
+ * Make room in a full inventory before picking more up: store extras in the home chest if it
+ * can, otherwise drop junk. Throws only if there's truly no room left.
+ */
+export async function makeRoom(bot: any, signal: AbortSignal, p?: Plan): Promise<void> {
+  if ((bot.inventory.emptySlotCount?.() ?? 1) > 0 || bot.craftieMakingRoom) return;
+  bot.craftieMakingRoom = true; // never re-enter (storing must not itself need bag space)
+  try {
+    if (p) say(p, 'my bag is full, making room');
+    // 1. Drop junk first: instant, needs nothing.
+    for (const [name, keep] of Object.entries(JUNK)) {
+      const extra = count(bot, name) - keep;
+      const it = bot.inventory.items().find((i: any) => i.name === name);
+      if (it && extra > 0) { try { await bot.toss(it.type, null, Math.min(extra, it.count)); } catch {} }
+    }
+    if (bot.inventory.emptySlotCount() > 2) return;
+    // 2. Store extras, but only in a chest that already exists nearby or that we're carrying
+    //    (making a new chest would need bag space we don't have).
+    const knownChest = bot.findBlock({ matching: (b: any) => b.name === 'chest' || b.name === 'barrel', maxDistance: 32 });
+    if (knownChest || count(bot, 'chest') > 0) { try { await skills.tidy.run(bot, {}, signal); } catch (e: any) { if (signal.aborted) throw e; } }
+    if (bot.inventory.emptySlotCount() > 0) return;
+    throw new Error('my inventory is full and there was nothing safe to store or drop');
+  } finally { bot.craftieMakingRoom = false; }
+}
+
 /** Hunt the nearest creature that drops this item until we have enough. */
 async function hunt(bot: any, item: string, want: number, p: Plan): Promise<void> {
   const kinds = MOB_DROPS[item];
@@ -138,6 +169,7 @@ async function hunt(bot: any, item: string, want: number, p: Plan): Promise<void
       await skills.explore.run(bot, { distance: 60 }, p.signal).catch((e: any) => { if (p.signal.aborted) throw e; });
       continue;
     }
+    await makeRoom(bot, p.signal, p);
     say(p, `hunting ${target.name} for ${item} (${count(bot, item)}/${want})`);
     const before = count(bot, item);
     await skills.attack.run(bot, { target: target.name }, p.signal).catch((e: any) => { if (p.signal.aborted) throw e; });
@@ -180,6 +212,7 @@ async function gather(bot: any, item: string, want: number, p: Plan): Promise<vo
       await skills.explore.run(bot, { distance: 80 }, p.signal).catch((e: any) => { if (p.signal.aborted) throw e; });
       continue;
     }
+    await makeRoom(bot, p.signal, p);
     const e0 = epoch(bot);
     try {
       const block = bot.blockAt(target);
