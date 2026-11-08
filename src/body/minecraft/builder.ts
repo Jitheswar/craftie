@@ -448,15 +448,26 @@ export async function build(bot: any, a: BuildArgs, signal: AbortSignal): Promis
     // Remove scaffolding top-down. canDig stays OFF so walking there never breaks the build;
     // the bot only ever digs the scaffold block itself. Unreachable ones are left.
     let removed = 0;
-    for (let pass = 0; pass < 2; pass++) {
-      for (const s of [...scaffolds.values()].sort((p, q) => q.y - p.y)) {
-        const b = bot.blockAt(s);
-        if (!b || !SCAFFOLD.includes(b.name) || wanted.get(key(s)) === b.name) continue;
-        const eye = () => bot.entity.position.offset(0, 1.6, 0).distanceTo(s.offset(0.5, 0.5, 0.5));
-        if (eye() > 4.3) await go(new goals.GoalNear(s.x, s.y, s.z, pass ? 2 : 3));
-        if (eye() > 4.8) continue;
-        try { await cancellable(bot, signal, bot.dig(b)); removed++; } catch {}
+    // Break everything within reach from where we stand (top-down so nothing floats), then walk
+    // to the nearest remaining scaffold and repeat. Pillars cluster, so this saves most walks.
+    const isScaffold = (v: Vec3) => { const b = bot.blockAt(v); return !!b && SCAFFOLD.includes(b.name) && wanted.get(key(v)) !== b.name; };
+    let scafLeft = [...scaffolds.values()].filter(isScaffold);
+    for (let walks = 0; scafLeft.length && walks < 60; walks++) {
+      const eye = () => bot.entity.position.offset(0, 1.6, 0);
+      const reach = scafLeft.filter((v) => eye().distanceTo(v.offset(0.5, 0.5, 0.5)) <= 4.5).sort((a, b) => b.y - a.y);
+      for (const v of reach) {
+        if (signal.aborted) throw new Error('aborted');
+        const b = bot.blockAt(v);
+        if (!b || !isScaffold(v)) continue;
+        try { await bot.tool?.equipForBlock?.(b); await cancellable(bot, signal, bot.dig(b, true)); removed++; } catch {}
       }
+      scafLeft = scafLeft.filter(isScaffold);
+      if (!scafLeft.length) break;
+      const me = bot.entity.position;
+      const next = scafLeft.sort((a, b) => a.distanceTo(me) - b.distanceTo(me))[0];
+      const before = scafLeft.length;
+      await go(new goals.GoalNear(next.x, next.y, next.z, 3));
+      if (eye().distanceTo(next.offset(0.5, 0.5, 0.5)) > 4.8 && before === scafLeft.length) scafLeft = scafLeft.filter((v) => v !== next); // can't reach that one: leave it
     }
     // Anything we dug out from under the design (e.g. a scaffold standing in a wall spot) gets refilled.
     for (const c of cells) {

@@ -142,16 +142,15 @@ Craftie is young and being built actively.
 - the planner,
 - building in creative,
 - memory,
-- Jev routing.
+- Jev routing,
+- long-running projects (*"build a village"* is split into steps and carried on across sessions; `craftie project status` / `pause` / `resume` / `cancel`).
 
 **Still being polished:**
 - big survival builds from scratch,
-- build speed,
-- environment awareness (noticing threats, biomes, villages and the like),
+- build speed (a cottage takes about 4 minutes in survival),
 - testing the Auto LAN mod on 1.21+ in a real game.
 
 **Planned:**
-- long-running projects ("build a village" over several sessions),
 - building from schematic files,
 - several Crafties working together.
 
