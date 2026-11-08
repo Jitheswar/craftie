@@ -305,15 +305,32 @@ export async function build(bot: any, a: BuildArgs, signal: AbortSignal): Promis
   moves.canDig = false; moves.allowParkour = false; moves.allow1by1towers = true;
   moves.scafoldingBlocks = SCAFFOLD.map((n) => bot.registry.itemsByName[n].id);
   bot.pathfinder.setMovements(moves);
+  // Creative flight that doesn't get stuck: flying moves in straight lines and stops at obstacles,
+  // so longer trips go up above the build and trees first, across, then down onto the spot.
+  // (H = design height, from above)
+  const flyLeg = async (to: Vec3, ms: number) => { try { await Promise.race([bot.creative.flyTo(to), sleep(ms)]); } catch {} };
+  const flyRoute = async (target: Vec3) => {
+    const pos = bot.entity.position;
+    const flat = Math.hypot(target.x - pos.x, target.z - pos.z);
+    if (flat < 5 && Math.abs(target.y - pos.y) < 5) return flyLeg(target, 3000);
+    const cruise = Math.max(pos.y, target.y, origin.y + H) + 3;
+    if (pos.y < cruise - 0.5) await flyLeg(new Vec3(pos.x, cruise, pos.z), 3000);
+    await flyLeg(new Vec3(target.x, cruise, target.z), 4000);
+    await flyLeg(target, 3000);
+  };
+
   // Every walk is capped, so a blocked route can never hang the build.
   const go = async (goal: any, ms = 25_000) => {
     await pauseGate(bot);
     // Creative: fly there directly. No pathfinding, no scaffolding to clean up afterwards.
     if (bot.game.gameMode === 'creative' && typeof goal.x === 'number' && !(goal instanceof goals.GoalInvert)) {
-      const target = new Vec3(goal.x + 0.5, goal.y + 2.2, goal.z + 0.5);
-      if (target.distanceTo(bot.entity.position) > 1) {
-        await timed('fly', async () => { try { await Promise.race([bot.creative.flyTo(target), sleep(8000)]); } catch {} });
-      }
+      // Hover just above the block and 1.5 blocks toward the middle of the build (that's empty
+      // space inside), so the block is well within the server's ~4.5 block reach.
+      const mid = new Vec3(origin.x + W / 2, goal.y, origin.z + d / 2);
+      const toMid = new Vec3(mid.x - (goal.x + 0.5), 0, mid.z - (goal.z + 0.5));
+      const step = toMid.norm() > 0.5 ? toMid.normalize().scaled(1.5) : new Vec3(0, 0, 0);
+      const target = new Vec3(goal.x + 0.5 + step.x, goal.y + 1.2, goal.z + 0.5 + step.z);
+      if (target.distanceTo(bot.entity.position) > 1) await timed('fly', () => flyRoute(target));
       return;
     }
     let timer: any;

@@ -12,6 +12,8 @@ export type BrainConfig = {
   maxSteps?: number; historyLimit?: number; verbose?: boolean; onSettings?: () => void;
   /** The player Craftie belongs to: it follows them when idle and rescues their items when they die. */
   owner?: string;
+  /** "craftie restart": restart the whole program (reloads code and settings). */
+  onRestart?: () => void;
 };
 
 type Plan = { say?: string; actions?: Action[]; done?: boolean };
@@ -110,7 +112,8 @@ export class Brain {
     setInterval(() => this.maybeChore().catch((e) => console.error('[brain]', e)), 15000);
     // Chores never drag Craftie away: if the player walks off, drop the chore and follow.
     setInterval(() => {
-      if (this.current?.startsWith('chore:') && this.owner && !this.body.isNear(this.owner, 40)) { this.log('player moved away -> dropping chore'); this.abort(); }
+      const leash = this.current?.startsWith('chore: treasure') ? 24 : 40;
+      if (this.current?.startsWith('chore:') && this.owner && !this.body.isNear(this.owner, leash)) { this.log('player moved away -> dropping chore'); this.abort(); }
     }, 3000);
   }
 
@@ -121,7 +124,7 @@ export class Brain {
     const t = text.toLowerCase().replace(/[!.?]+$/, '').trim();
     // Personal commands (follow/stay/stop/relax/settings/my stuff) belong to the player only, not friends.
     const me = !this.cfg.owner || from === this.cfg.owner || from.startsWith('console');
-    if (!me && /^(follow|come with|keep up|stay|wait|don'?t follow|stop|cancel|halt|freeze|nvm|never ?mind|pause|resume|unpause|relax|take a break|chill|get to work|work|back to work|keep busy|\/?(mod-)?(settings|setup|options|config))\b/.test(t)) {
+    if (!me && /^(follow|come with|keep up|stay|wait|don'?t follow|stop|cancel|halt|freeze|nvm|never ?mind|pause|resume|unpause|restart|reboot|reload|relax|take a break|chill|get to work|work|back to work|keep busy|\/?(mod-)?(settings|setup|options|config))\b/.test(t)) {
       this.say(`Sorry ${from}, only ${this.cfg.owner} can tell me that.`);
       return true;
     }
@@ -133,6 +136,12 @@ export class Brain {
     if (/^(stop|cancel|halt|freeze|nvm|never ?mind)$/.test(t)) { this.abort(); this.queue = []; this.say('Stopped.'); return true; }
     if (/^(come( here)?|come to me|tp to me)$/.test(t)) { this.startTask(from, `goto player ${from}`, [{ skill: 'goto', args: { player: from } }]); return true; }
     if (/^(follow( me)?|come with me|keep up)$/.test(t)) { this.abort(); this.following = true; this.body.setFollow(this.owner || from); this.say("Following you."); return true; }
+    if (/^(restart|reboot|reload|restart yourself)$/.test(t)) {
+      if (!this.cfg.onRestart) { this.say('Restart only works when I was started with the start file.'); return true; }
+      this.say('Restarting, back in a few seconds.');
+      setTimeout(() => this.cfg.onRestart!(), 1500); // let the chat line go out first
+      return true;
+    }
     if (/^(pause|pause ai|save usage|low usage|go quiet|quiet mode)$/.test(t)) { this.abort(); this.setAiPaused(true); this.say("Paused my AI to save usage. I'll still follow, defend and do simple commands."); return true; }
     if (/^(resume|unpause|ai on|wake up|back on)$/.test(t)) { this.setAiPaused(false); this.say('AI back on. What do you need?'); return true; }
     if (/^(relax|take a break|stop working|chill)$/.test(t)) { this.working = false; this.abort(); this.say("OK, I'll just hang out."); return true; }
@@ -238,6 +247,24 @@ export class Brain {
     }
     if (!this.working || this.current || this.fighting || !this.owner || !this.body.isNear(this.owner, 32)) return;
     const now = Date.now();
+    // Treasure first: valuables right here are worth a quick detour; deep/risky ones get reported.
+    const t = this.body.findTreasure(this.owner);
+    if (t?.kind === 'report') {
+      const name = t.block.replace(/^deepslate_|_ore$/g, '').replace(/_/g, ' ');
+      this.say(`Found ${name} at ${t.x} ${t.y} ${t.z} (${t.why}). Say "get the ${name}" if you want it.`);
+      this.memory2.remember([`${name} spotted at ${t.x} ${t.y} ${t.z} (${t.why})`]);
+      this.memory2.logActivity(`spotted ${name} at ${t.x} ${t.y} ${t.z}`);
+      return;
+    }
+    if (t?.kind === 'grab' || t?.kind === 'item') {
+      const what = t.kind === 'item' ? t.item : t.block;
+      if (t.kind === 'grab' && t.rare) this.say(`Ooh, ${what.replace(/^deepslate_|_ore$/g, '').replace(/_/g, ' ')} here, grabbing it.`);
+      const act = t.kind === 'item'
+        ? { skill: 'goto', args: { x: Math.floor(t.x), y: Math.floor(t.y), z: Math.floor(t.z), range: 0 } }
+        : { skill: 'dig', args: { x: t.x, y: t.y, z: t.z } };
+      await this.startTask('self', `chore: treasure ${what}`, [act], false, true);
+      return;
+    }
     const skip = new Set([...this.choreSkip].filter(([, until]) => until > now).map(([k]) => k));
     const chore = this.body.nextChore(skip);
     if (!chore) return;
@@ -399,6 +426,9 @@ export class Brain {
     if (r.say) { this.say(r.say); this.memory2.addTurn('Craftie', r.say); }
     this.memory2.remember((r as any).remember); this.memory2.forget((r as any).forget);
   }
+
+  /** Swap the AI (provider/model/keys) or Jev without stopping anything. */
+  setAI(llm: LLM, router: JevRouter | null) { this.llm = llm; this.router = router; this.memory2.setLLM(llm); }
 
   shutdown() { this.queue = []; this.abort(); }
 

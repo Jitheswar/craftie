@@ -48,6 +48,28 @@ export async function clearCraftingGrid(bot: any) {
   } catch {}
 }
 
+const TIER = ['netherite', 'diamond', 'iron', 'chainmail', 'stone', 'golden', 'leather', 'wooden'];
+const tierOf = (name: string) => { const i = TIER.findIndex((t) => name.startsWith(t + '_')); return i < 0 ? 99 : i; };
+
+/** The best weapon it has: sword of the best material, else the best axe. */
+export function bestWeapon(bot: any) {
+  const items = bot.inventory.items();
+  const pick = (suffix: string) => items.filter((i: any) => i.name.endsWith(suffix)).sort((a: any, b: any) => tierOf(a.name) - tierOf(b.name))[0];
+  return pick('_sword') ?? pick('_axe');
+}
+
+/** Wear the best armor, shield in the off-hand, best weapon in hand (call when not using a tool for a job). */
+export async function equipBest(bot: any, weaponInHand = true) {
+  try { await bot.armorManager?.equipAll?.(); } catch {}
+  try {
+    const shield = bot.inventory.items().find((i: any) => i.name === 'shield');
+    if (shield && bot.inventory.slots[45]?.name !== 'shield') await bot.equip(shield, 'off-hand');
+  } catch {}
+  if (!weaponInHand) return;
+  const w = bestWeapon(bot);
+  if (w && bot.heldItem?.name !== w.name) { try { await bot.equip(w, 'hand'); } catch {} }
+}
+
 /** Long jobs call this at safe points: if a fight is going on, wait for it to end. */
 export async function pauseGate(bot: any) { while (bot.craftiePause) await bot.craftiePause; }
 /** Changes every time a fight interrupts us; lets loops tell "interrupted" apart from "failed". */
@@ -268,8 +290,14 @@ export const skills: Record<string, Skill> = {
       const b = bot.blockAt(p);
       if (!b || b.name === 'air') return 'nothing there';
       await bot.tool?.equipForBlock?.(b);
+      if (b.harvestTools && !bot.heldItem?.type || (b.harvestTools && !b.harvestTools[bot.heldItem?.type])) return `need a better tool to mine ${b.name}`;
       await cancellable(bot, signal, bot.dig(b));
-      return `dug ${b.name}`;
+      // Walk over and pick up what dropped.
+      await sleep(300);
+      const drop = Object.values(bot.entities as Record<string, any>).filter((e) => e.name === 'item' && e.position.distanceTo(p) < 3)
+        .sort((x, y) => x.position.distanceTo(p) - y.position.distanceTo(p))[0];
+      if (drop) await Promise.race([bot.pathfinder.goto(new goals.GoalNear(drop.position.x, drop.position.y, drop.position.z, 0.5)).catch(() => {}), sleep(5000)]);
+      return `dug ${b.name}${drop ? ' and picked it up' : ''}`;
     },
   },
 
@@ -288,8 +316,7 @@ export const skills: Record<string, Skill> = {
     async run(bot, a, signal) {
       const e = entityByName(bot, a.target);
       if (!e) return `no ${a.target} nearby`;
-      const sword = bot.inventory.items().filter((i: any) => i.name.endsWith('_sword') || i.name.endsWith('_axe')).sort((x: any, y: any) => y.type - x.type)[0];
-      if (sword) await bot.equip(sword, 'hand');
+      await equipBest(bot); // best armor on, best weapon in hand
       bot.pvp.attack(e);
       const deadline = Date.now() + (a.chase ? 90000 : 30000); // players get chased longer
       while (bot.entities[e.id] && e.isValid !== false && Date.now() < deadline) await sleep(300, signal);

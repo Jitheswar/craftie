@@ -93,6 +93,8 @@ export class Session extends EventEmitter {
 
   /** Fires when someone types "!ai settings" in game. */
   onSettings: () => void = () => {};
+  /** Fires on "craftie restart". */
+  onRestart: () => void = () => {};
 
   async start(saved: Setup) {
     if (this.running) await this.stop();
@@ -126,11 +128,32 @@ export class Session extends EventEmitter {
         password: setup.play.password || undefined, autoReconnect: true, viewerPort: 0,
       };
       this.body = createMinecraftBody(mc);
-      this.brain = new Brain(this.body, llm, router, { verbose: true, onSettings: () => this.onSettings(), owner: setup.playerName.trim() });
+      this.brain = new Brain(this.body, llm, router, { verbose: true, onSettings: () => this.onSettings(), onRestart: () => this.onRestart(), owner: setup.playerName.trim() });
     } catch (e: any) {
       this.set({ state: 'error', message: e.message });
       await this.stop(true);
     }
+  }
+
+  /**
+   * Save-and-apply from the settings page. Changes that don't affect the connection
+   * (AI provider/model, keys, Jev) are swapped in live; only name/where-to-play changes rejoin.
+   */
+  async apply(saved: Setup): Promise<'started' | 'live' | 'reconnected'> {
+    const prev = this.setup;
+    if (!this.running || !prev || !this.brain) { await this.start(saved); return 'started'; }
+    const connKey = (x: Setup) => JSON.stringify([x.playerName.trim(), x.botName, x.play.mode, x.play.address ?? '', x.play.password ? 'pw' : '']);
+    const next: Setup = JSON.parse(JSON.stringify(saved));
+    next.ai.apiKey ??= getSecret(keyName.ai(next.ai.id));
+    if (next.jev?.enabled) next.jev.apiKey ??= getSecret(keyName.jev);
+    if (next.play.address) next.play.password ??= getSecret(keyName.login(next.play.address));
+    if (connKey(next) !== connKey(prev)) { await this.start(saved); return 'reconnected'; }
+    const llm = makeLLM(next.ai.id, providerFor(next.ai));
+    const router = next.jev?.enabled && (next.jev.apiKey || process.env.TYPESAFE_API_KEY) ? new JevRouter(new Jev({ apiKey: next.jev.apiKey })) : null;
+    this.brain.setAI(llm, router);
+    this.setup = next;
+    this.log(`[craftie] settings applied live (AI: ${next.ai.id}${router ? ', Jev on' : ''})`);
+    return 'live';
   }
 
   /** Called with each captured log line, to move the status along. */

@@ -34,6 +34,12 @@ export function nextChore(bot: any, skip: Set<string>): Chore | null {
     for (const piece of ['chestplate', 'leggings', 'helmet', 'boots'])
       if (!has(bot, `iron_${piece}`) && !has(bot, `diamond_${piece}`)) list.push({ item: `iron_${piece}`, count: 1, why: `iron ${piece}` });
   }
+  // Diamond gear when it has the diamonds (from treasure finds), sword first.
+  const dia = count(bot, 'diamond');
+  if (dia >= 2 && sword > 1) list.push({ item: 'diamond_sword', count: 1, why: 'a diamond sword' });
+  if (dia >= 3 && pick > 1) list.push({ item: 'diamond_pickaxe', count: 1, why: 'a diamond pickaxe' });
+  if (!has(bot, 'shield') && count(bot, 'iron_ingot') >= 1) list.push({ item: 'shield', count: 1, why: 'a shield' });
+
   // Building stock for your projects.
   if (count(bot, 'cobblestone') < 64) list.push({ item: 'cobblestone', count: 64, why: 'stone to build with' });
   return list.find((c) => !skip.has(c.item)) ?? null;

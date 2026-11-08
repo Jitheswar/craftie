@@ -34,6 +34,8 @@ export interface Body {
   onPlayerSleep(cb: (player: string, bed: { x: number; y: number; z: number }) => void): void;
   /** The next thing Craftie should get for itself (food, tools, armor, a bed...), or null if all set. */
   nextChore(skip: Set<string>): { item: string; count: number; why: string } | null;
+  /** Something valuable nearby: grab it (safe and close) or report it (deep/risky). */
+  findTreasure(owner: string | null): any;
   /** Is this player close by (so chores don't drag Craftie away from them)? */
   isNear(player: string, blocks: number): boolean;
   /** Keep near this player at a safe distance in the background (null = stop). */

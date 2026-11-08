@@ -134,7 +134,8 @@
     <button class="big" id="go" type="submit">Save and start Craftie</button>
     <p class="hint" style="text-align:center">You only do this once. Craftie then waits in the background and joins whenever you open a world to LAN.<br>To come back here, type <b>!ai settings</b> in Minecraft chat.</p>
   </form>
-  <button class="big stop" id="stop" type="button" hidden>Stop Craftie</button>
+  <button class="big stop" id="stop" type="button" hidden style="margin-top:10px">Stop Craftie</button>
+  <div id="toast" role="status" aria-live="polite" style="position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:10px;font-weight:600;opacity:0;transition:opacity .25s;pointer-events:none;max-width:calc(100% - 32px)"></div>
 </main>
 
 <script>
@@ -219,10 +220,20 @@ function collect() {
 $('setup').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('go').disabled = true;
-  $('feed').innerHTML = '';
-  await api('/api/start', { method: 'POST', body: JSON.stringify(collect()) });
+  const r = await (await api('/api/start', { method: 'POST', body: JSON.stringify(collect()) })).json().catch(() => ({}));
   $('apiKey') && ($('apiKey').value = ''); $('jevKey').value = ''; $('password').value = '';
+  $('go').disabled = false;
+  toast(r.how === 'live' ? 'Saved ✓ Changes are live.' : r.how === 'reconnected' ? 'Saved ✓ Reconnecting with the new settings…' : r.ok ? 'Saved ✓ Starting Craftie…' : 'Could not save: ' + (r.error ?? 'unknown error'));
+  // Refresh "saved key" placeholders without reloading the page.
+  state = await (await api('/api/state')).json();
+  renderExtra();
+  $('jevKey').placeholder = state.saved.jev ? 'Saved ✓ (leave empty to keep it)' : 'Paste your TypeSafe key';
 });
+function toast(msg) {
+  const t = $('toast');
+  t.textContent = msg; t.style.opacity = '1';
+  clearTimeout(t._h); t._h = setTimeout(() => (t.style.opacity = '0'), 3500);
+}
 $('stop').addEventListener('click', async () => { $('stop').disabled = true; await api('/api/stop', { method: 'POST' }); $('stop').disabled = false; });
 
 const TITLES = { starting: 'Getting ready...', waiting: 'Almost there...', joined: 'Craftie is in your game!', error: 'Something went wrong', idle: '' };
@@ -234,10 +245,10 @@ function showStatus(s) {
   $('status').classList.toggle('err', s.state === 'error');
   $('statusTitle').textContent = TITLES[s.state];
   $('statusMsg').textContent = s.message;
-  $('setup').hidden = running;
+  // Settings stay visible and editable while Craftie plays; saving applies them live.
   $('stop').hidden = !running;
   $('live').style.display = running ? 'block' : 'none';
-  $('go').disabled = false;
+  $('go').textContent = running ? 'Save changes' : 'Save and start Craftie';
 }
 
 // Turn raw bot logs into a friendly feed. Everything else is "technical".

@@ -115,6 +115,8 @@ export class Memory {
     } finally { this.folding = false; }
   }
 
+  setLLM(llm: LLM) { this.llm = llm; }
+
   /** What Craftie did, in one line. Lets it answer "what were you doing?". */
   logActivity(text: string) {
     const t = text.slice(0, 160);

@@ -11,11 +11,30 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Vec3 } from 'vec3';
 import { canUseCommands, describe, vocab } from './perception.ts';
-import { skills } from './skills.ts';
+import { equipBest, skills } from './skills.ts';
 import './autonomy.ts'; // adds obtain + build to skills
 import { nextChore } from './chores.ts';
+import { findTreasure } from './treasure.ts';
 
-const { pathfinder, Movements } = pf as any;
+const { pathfinder, Movements: BaseMovements } = pf as any;
+
+/**
+ * The pathfinder thinks you can't climb out of water: when deciding if a jump onto the shore is
+ * possible, it measures from the pool floor instead of the surface you're floating at. Swimmers
+ * float, so measure from the water surface instead. Everything else is the library's own logic.
+ */
+class Movements extends BaseMovements {
+  getMoveJumpUp(node: any, dir: any, neighbors: any) {
+    if (!this.getBlock(node, 0, 0, 0).liquid) return super.getMoveJumpUp(node, dir, neighbors);
+    const orig = this.getBlock;
+    this.getBlock = (n: any, dx: number, dy: number, dz: number) => {
+      const b = orig.call(this, n, dx, dy, dz);
+      return n === node && dx === 0 && dy === -1 && dz === 0 ? { ...b, height: node.y } : b;
+    };
+    try { return super.getMoveJumpUp(node, dir, neighbors); } finally { this.getBlock = orig; }
+  }
+}
+export { Movements as CraftieMovements };
 
 export type MinecraftConfig = {
   /** Server address, or "lan" to auto-find a world opened with "Open to LAN". */
@@ -161,6 +180,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
       bot.collectBlock.movements = moves;
       bot.autoEat.setOpts({ minHunger: 15 });
       bot.autoEat.enableAuto();
+      setTimeout(() => equipBest(bot).catch(() => {}), 2000);
       outQueue.push(`Hi! I'm ${bot.username}. Type "${cfg.prefixes[0]} <anything>" in chat to give me a job, or "${cfg.prefixes[0]} stop".`);
       if (cfg.viewerPort) {
         try {
@@ -194,6 +214,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
       const d = { ...died, cause: lastDeathMsg.replace(bot.username, '').trim() || 'unknown' };
       died = null; lastDeathMsg = '';
       setTimeout(() => deathCbs.forEach((cb) => cb(d)), 1500); // let the world load around the respawn point
+      setTimeout(() => equipBest(bot).catch(() => {}), 2500);
     });
 
     // Owner deaths: from the death event if we can see them, else from the death message + where we last saw them.
@@ -231,20 +252,25 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
     // Reflex: never drown. Low on air in water -> swim straight up, whatever else is going on.
     // Swimming: the bot library sinks and walks along the bottom. Instead, float and swim at the surface
     // (like a player holding space) unless the destination is underwater; and surface when low on air.
-    let surfacing = false, floating = false;
-    setInterval(() => {
+    let surfacing = false;
+    // Runs every game tick, after the pathfinder (which resets the controls each tick), so it wins.
+    bot.on('physicsTick', () => {
       if (!bot.entity) return;
       const air = bot.oxygenLevel ?? 20;
       const inWater = bot.entity.isInWater;
       if (inWater && air < 10 && !surfacing) { surfacing = true; console.log('[mc] low on air, surfacing'); }
       if (surfacing && (!inWater || air >= 19)) surfacing = false;
-      const head = bot.blockAt(bot.entity.position.offset(0, 1.6, 0));
+      if (!inWater) return;
       const goal = bot.pathfinder?.goal;
-      const goalBelow = goal && typeof goal.y === 'number' && goal.y < bot.entity.position.y - 2;
-      const wantFloat = surfacing || (inWater && !goalBelow && (head?.name === 'water' || bot.pathfinder?.isMoving() || followTarget));
-      if (wantFloat !== floating) { floating = !!wantFloat; bot.setControlState('jump', floating); }
-      if (floating && inWater) bot.setControlState('sprint', true); // sprint-swim: faster, like players
-    }, 150);
+      let goalBelow = goal && typeof goal.y === 'number' && goal.y < bot.entity.position.y - 2;
+      // Following someone who's swimming underwater: dive with them while there's plenty of air.
+      if (!goalBelow && followTarget && !goal) {
+        const o = Object.values(bot.entities as Record<string, any>).find((x) => x.username === followTarget);
+        if (o && o.position.y < bot.entity.position.y - 1.5 && air >= 10) goalBelow = true;
+      }
+      // Float and swim at the surface like a player holding space, unless the job is underwater.
+      if (surfacing || !goalBelow) bot.setControlState('jump', true);
+    });
 
     // Creative: fly with the player when they fly (or are far away), land when they land.
     let flying = false, flyBusy = false;
@@ -257,7 +283,8 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
       const e = Object.values(bot.entities as Record<string, any>).find((x) => x.username === followTarget);
       if (!e) { if (process.env.CRAFTIE_DEBUG) console.log('[mc] fly check: player not visible'); return; }
       const airborne = groundBelow(e.position) >= 2, dist = e.position.distanceTo(bot.entity.position);
-      if (airborne || (flying && dist > 6) || dist > 24) {
+      const wellAbove = e.position.y - bot.entity.position.y > 2.5; // e.g. standing on a pillar
+      if (airborne || wellAbove || (flying && dist > 6) || dist > 24) {
         if (bot.pathfinder.goal) bot.pathfinder.setGoal(null);
         // Aim 3 blocks behind the player, at their height.
         const back = bot.entity.position.minus(e.position); back.y = 0;
@@ -266,32 +293,88 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
         if (target.distanceTo(bot.entity.position) < 2) return;
         flyBusy = true; flying = true;
         try { await bot.creative.flyTo(target); } catch (err: any) { if (process.env.CRAFTIE_DEBUG) console.log('[mc] flyTo failed:', err.message); } finally { flyBusy = false; }
-      } else if (flying && !airborne && dist <= 6) {
+      } else if (flying && !airborne && !wellAbove && dist <= 6) {
         flying = false;
         try { bot.creative.stopFlying(); } catch {}
       }
     }, 400);
 
     let lastTp = 0, ownerDiedAt = 0, gettingBlocks = false;
+    // Follow has two modes. "steer": walk/swim straight toward the player like a person would
+    // (no pathfinder, nothing to get stuck on). "path": the pathfinder, only for climbing up to
+    // them or going around obstacles, and re-planned as soon as they move.
+    let mode: 'steer' | 'path' = 'steer', stuckSince = 0, lastDist = 0, pathUntil = 0, pathFrom: any = null;
+    const ownerEntity = () => Object.values(bot.entities as Record<string, any>).find((x) => x.username === followTarget);
+    const isFollowGoal = () => bot.pathfinder.goal instanceof (pf as any).goals.GoalFollow;
+    const stopSteer = () => { bot.setControlState('forward', false); bot.setControlState('sprint', false); };
+    const solidAt = (v: any) => { const b = bot.blockAt(v); return b && b.boundingBox === 'block'; };
+    const dangerAt = (v: any) => /lava|fire|magma|cactus|powder_snow/.test(bot.blockAt(v)?.name ?? '');
+
+    // Steering runs every tick, after the pathfinder, while following in steer mode.
+    bot.on('physicsTick', () => {
+      if (mode !== 'steer' || !followTarget || !bot.entity || bot.craftiePause || flying || gettingBlocks) return;
+      if (bot.pathfinder.goal && !isFollowGoal()) return; // a job is using the pathfinder
+      const e = ownerEntity();
+      if (!e) { stopSteer(); return; }
+      const me = bot.entity.position, flat = Math.hypot(e.position.x - me.x, e.position.z - me.z);
+      if (flat < 3) { stopSteer(); return; }
+      bot.lookAt(e.position.offset(0, 1.6, 0), true);
+      // Look one step ahead: don't walk off a big drop or into lava; hop up single blocks.
+      const yaw = bot.entity.yaw, ahead = me.offset(-Math.sin(yaw) * 0.8, 0, -Math.cos(yaw) * 0.8).floored();
+      let drop = 0; while (drop < 5 && !solidAt(ahead.offset(0, -drop - 1, 0)) && !bot.entity.isInWater) drop++;
+      if ((drop >= 4 && e.position.y > me.y - drop + 1) || dangerAt(ahead) || dangerAt(ahead.offset(0, -1, 0))) { stopSteer(); mode = 'path'; pathUntil = Date.now() + 6000; return; }
+      bot.setControlState('forward', true);
+      bot.setControlState('sprint', flat > 8 && !bot.entity.isInWater);
+      if ((solidAt(ahead) && !solidAt(ahead.offset(0, 1, 0)) && !solidAt(me.offset(0, 2, 0).floored())) || bot.entity.isCollidedHorizontally)
+        bot.setControlState('jump', true);
+      else if (!bot.entity.isInWater) bot.setControlState('jump', false);
+    });
+
+    // Gear check while idle: best armor on and best weapon in hand, ready for trouble.
+    let gearCheck = 0;
+    bot.on('playerCollect', (collector: any) => { if (collector === bot.entity) gearCheck = 0; });
     setInterval(() => {
-      if (!followTarget || !bot.entity || bot.craftiePause || gettingBlocks || flying) return;
-      // A follow goal that's stuck (e.g. couldn't climb) gets re-planned; other goals belong to a job.
-      if (bot.pathfinder.isMoving() || (bot.pathfinder.goal && !(bot.pathfinder.goal instanceof (pf as any).goals.GoalFollow))) return;
-      if (bot.pathfinder.goal && bot.pathfinder.goal.isEnd?.(bot.entity.position.floored())) return;
-      const e = Object.values(bot.entities as Record<string, any>).find((x) => x.username === followTarget);
+      if (Date.now() - gearCheck > 10_000 && followTarget && !bot.pathfinder?.goal && !bot.craftiePause && bot.entity && !bot.currentWindow) {
+        gearCheck = Date.now();
+        equipBest(bot).catch(() => {});
+      }
+    }, 1000);
+
+    setInterval(() => {
+      if (!followTarget || !bot.entity || bot.craftiePause || gettingBlocks || flying) { if (mode === 'steer') stopSteer(); return; }
+      if (bot.pathfinder.goal && !isFollowGoal()) return; // a job is using the pathfinder
+      const e = ownerEntity();
       if (e) {
-        if (e.position.distanceTo(bot.entity.position) <= 5) return;
-        const above = e.position.y - bot.entity.position.y;
-        const blocks = bot.inventory.items().filter((i: any) => bot.pathfinder.movements.scafoldingBlocks.includes(i.type)).reduce((n: number, i: any) => n + i.count, 0);
-        if (above > 3 && blocks < above + 2 && bot.game.gameMode !== 'creative' && !gettingBlocks) {
-          // They climbed up and we have nothing to stack: dig a few dirt blocks nearby first.
-          gettingBlocks = true;
-          const dirt = bot.findBlocks({ matching: ['dirt', 'grass_block'].map((n) => bot.registry.blocksByName[n].id), maxDistance: 8, count: Math.ceil(above + 4) });
-          console.log(`[mc] ${followTarget} went up ${Math.round(above)} blocks; grabbing ${dirt.length} dirt to climb after them`);
-          bot.collectBlock.collect(dirt.map((p: any) => bot.blockAt(p)).filter(Boolean), { ignoreNoPath: true }).catch(() => {}).finally(() => { gettingBlocks = false; });
+        const me = bot.entity.position, dist = e.position.distanceTo(me);
+        const above = e.position.y - me.y;
+        const needClimb = above > 2.5 && bot.game.gameMode !== 'creative';
+        // Steering that isn't getting closer (wall in the way) for 3s -> let the pathfinder route around.
+        if (mode === 'steer' && dist > 4) {
+          if (dist >= lastDist - 0.3) { stuckSince ||= Date.now(); if (Date.now() - stuckSince > 3000) { mode = 'path'; pathUntil = Date.now() + 8000; stopSteer(); } }
+          else stuckSince = 0;
+        }
+        lastDist = dist;
+        const wantPath = needClimb || dist > 12 || Date.now() < pathUntil;
+        if (!wantPath) {
+          if (mode === 'path') { if (isFollowGoal()) bot.pathfinder.setGoal(null); mode = 'steer'; stuckSince = 0; }
           return;
         }
-        bot.pathfinder.setGoal(new (pf as any).goals.GoalFollow(e, 3), true);
+        mode = 'path';
+        if (dist <= 4 && !needClimb) { if (isFollowGoal()) bot.pathfinder.setGoal(null); return; }
+        // Climbing toward where they *were*? They moved or came down: drop the old plan right away.
+        if (isFollowGoal() && pathFrom && (e.position.distanceTo(pathFrom) > 4 || (above < 1 && bot.pathfinder.isBuilding?.()))) { bot.pathfinder.setGoal(null); pathFrom = null; }
+        if (needClimb) {
+          const blocks = bot.inventory.items().filter((i: any) => bot.pathfinder.movements.scafoldingBlocks.includes(i.type)).reduce((n: number, i: any) => n + i.count, 0);
+          if (blocks < above + 2) {
+            // They climbed up and we have nothing to stack: dig a few dirt blocks nearby first.
+            gettingBlocks = true;
+            const dirt = bot.findBlocks({ matching: ['dirt', 'grass_block'].map((n) => bot.registry.blocksByName[n].id), maxDistance: 8, count: Math.ceil(above + 4) });
+            console.log(`[mc] ${followTarget} went up ${Math.round(above)} blocks; grabbing ${dirt.length} dirt to climb after them`);
+            bot.collectBlock.collect(dirt.map((p: any) => bot.blockAt(p)).filter(Boolean), { ignoreNoPath: true }).catch(() => {}).finally(() => { gettingBlocks = false; });
+            return;
+          }
+        }
+        if (!isFollowGoal()) { bot.pathfinder.setGoal(new (pf as any).goals.GoalFollow(e, 3), true); pathFrom = e.position.clone(); }
         return;
       }
       // Out of sight (far away, e.g. after one of us respawned): teleport if allowed, else walk to where we last saw them.
@@ -396,10 +479,14 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
     onPlayerDeath: (cb) => void playerDeathCbs.push(cb),
     onPlayerSleep: (cb) => void playerSleepCbs.push(cb),
     nextChore: (skip) => (bot?.entity ? nextChore(bot, skip) : null),
+    findTreasure: (owner) => (bot?.entity ? findTreasure(bot, owner) : null),
     isNear: (player, blocks) => {
       const e = bot?.entity && Object.values(bot.entities as Record<string, any>).find((x) => x.username === player);
       return Boolean(e && e.position.distanceTo(bot.entity.position) <= blocks);
     },
-    setFollow(player) { followTarget = player; if (!player) { bot?.pathfinder?.setGoal(null); } },
+    setFollow(player) {
+      followTarget = player;
+      if (!player && bot) { bot.pathfinder?.setGoal(null); bot.setControlState('forward', false); bot.setControlState('sprint', false); }
+    },
   };
 }

@@ -42,6 +42,19 @@ function openSettings() {
 }
 session.onSettings = openSettings;
 
+// "craftie restart": leave cleanly, then a detached helper starts a fresh copy once this one has exited
+// (it waits, so the new copy doesn't think we're still running).
+session.onRestart = async () => {
+  console.log('  Restarting Craftie...');
+  const { spawn } = await import('node:child_process');
+  const args = process.argv.slice(1).map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(' ');
+  const helper = spawn('sh', ['-c', `while kill -0 ${process.pid} 2>/dev/null; do sleep 0.3; done; sleep 1; exec '${process.execPath}' ${args}`],
+    { cwd: process.cwd(), detached: true, stdio: ['ignore', 'inherit', 'inherit'], env: process.env });
+  helper.unref();
+  await session.stop();
+  process.exit(0);
+};
+
 const json = (res: ServerResponse, code: number, body: unknown) => {
   res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
   res.end(JSON.stringify(body));
@@ -105,8 +118,8 @@ const server = createServer(async (req, res) => {
       delete body.autostart;
       const clean = storeSecrets(body); // keys go into the encrypted vault, not the settings file
       saveSetup(clean);
-      session.start(clean);
-      return json(res, 200, { ok: true });
+      const how = await session.apply(clean); // live when possible; rejoins only for name/where changes
+      return json(res, 200, { ok: true, how });
     }
     if (req.method === 'POST' && url.pathname === '/api/stop') { await session.stop(); return json(res, 200, { ok: true }); }
     if (req.method === 'POST' && url.pathname === '/api/command') {

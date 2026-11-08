@@ -12,6 +12,11 @@ for v in "$@"; do
   rm -rf .git src/main/java src/client/java src/client/resources src/main/resources/*.mixins.json
   mkdir -p src/client/java/dev/craftie/autolan src/main/resources/assets/craftie_autolan
   cp ../autolan-fabric/src/client/java/dev/craftie/autolan/AutoLan.java src/client/java/dev/craftie/autolan/
+  # Names that changed between Minecraft versions (Mojang mappings).
+  minor=$(echo "$v" | cut -d. -f2); patch=$(echo "$v" | cut -d. -f3); patch=${patch:-0}
+  if [ "$minor" -gt 20 ] || { [ "$minor" -eq 20 ] && [ "$patch" -ge 5 ]; }; then
+    sed -i 's/isAllowCheatsForAllPlayers/isAllowCommandsForAllPlayers/' src/client/java/dev/craftie/autolan/AutoLan.java
+  fi
   cp ../autolan-fabric/src/main/resources/assets/craftie_autolan/icon.png src/main/resources/assets/craftie_autolan/
   sed "s/\"minecraft\": \"~1.20.1\"/\"minecraft\": \"~$v\"/" ../autolan-fabric/src/main/resources/fabric.mod.json > src/main/resources/fabric.mod.json
   rm -rf src/main/resources/assets/modid
