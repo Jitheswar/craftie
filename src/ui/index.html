@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Craftie</title>
+<style>
+  :root {
+    --bg: #f4f1ea; --card: #fffdf8; --ink: #23201b; --muted: #6f685d; --line: #e2dccf;
+    --accent: #3f8f3a; --accent-ink: #fff; --warn: #b5651d; --bad: #b3261e; --soft: #eef5ec; --chip: #ece7dc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #171614; --card: #211f1c; --ink: #ece7de; --muted: #a39b8e; --line: #34312c;
+      --accent: #5cb356; --accent-ink: #0f170e; --warn: #e09a52; --bad: #ef7b72; --soft: #1f2a1e; --chip: #2c2a26; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 28px 16px 60px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  .logo { width: 40px; height: 40px; border-radius: 8px; background: linear-gradient(135deg, #6fbf4a 0 50%, #8b5a2b 50%); box-shadow: inset 0 0 0 3px rgba(0,0,0,.12); }
+  h1 { font-size: 24px; margin: 0; letter-spacing: -.01em; }
+  header p { margin: 0; color: var(--muted); font-size: 14px; }
+  .pill { margin-left: auto; padding: 4px 12px; border-radius: 99px; background: var(--chip); font-size: 13px; white-space: nowrap; }
+  .pill.on { background: var(--soft); color: var(--accent); font-weight: 600; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; margin-bottom: 14px; }
+  .card h2 { font-size: 16px; margin: 0 0 12px; display: flex; gap: 10px; align-items: center; }
+  .num { width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); font-size: 13px; display: grid; place-items: center; flex: none; }
+  label.f { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  input[type=text], input[type=password], select { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--ink); font: inherit; }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 560px) { .row { grid-template-columns: 1fr; } }
+  .opts { display: grid; gap: 8px; }
+  .opt { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+  .opt:has(input:checked) { border-color: var(--accent); background: var(--soft); }
+  .opt input { margin-top: 4px; accent-color: var(--accent); }
+  .opt b { display: block; font-weight: 600; }
+  .opt small { color: var(--muted); }
+  .badge { font-size: 12px; padding: 1px 8px; border-radius: 99px; background: var(--soft); color: var(--accent); margin-left: 6px; font-weight: 600; }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .tab { padding: 8px 14px; border-radius: 99px; border: 1px solid var(--line); background: none; color: var(--ink); font: inherit; cursor: pointer; }
+  .tab.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .hint { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+  .more { margin-top: 12px; }
+  .more summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+  .check { display: flex; gap: 8px; align-items: flex-start; margin-top: 12px; font-size: 14px; }
+  .check input { accent-color: var(--accent); margin-top: 3px; }
+  button.big { width: 100%; padding: 15px; font: 600 17px system-ui, sans-serif; border: 0; border-radius: 12px; background: var(--accent); color: var(--accent-ink); cursor: pointer; }
+  button.big.stop { background: var(--chip); color: var(--ink); }
+  button.big:disabled { opacity: .6; cursor: wait; }
+  .status { padding: 14px 16px; border-radius: 12px; background: var(--soft); margin-bottom: 14px; display: none; }
+  .status.err { background: color-mix(in srgb, var(--bad) 14%, transparent); }
+  .status b { display: block; margin-bottom: 4px; }
+  .addr { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+  code { background: var(--card); border: 1px solid var(--line); border-radius: 7px; padding: 4px 9px; font: 14px ui-monospace, monospace; }
+  .copy { font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; }
+  #live { display: none; }
+  #feed { height: 300px; overflow-y: auto; font-size: 14px; display: flex; flex-direction: column; gap: 4px; padding-right: 4px; }
+  #feed div { padding: 3px 0; border-bottom: 1px dashed var(--line); overflow-wrap: anywhere; }
+  #feed .tech { color: var(--muted); font: 12px ui-monospace, monospace; }
+  #feed.hide-tech .tech { display: none; }
+  .say { display: flex; gap: 8px; margin-top: 10px; }
+  .say input { flex: 1; }
+  .say button { padding: 0 18px; border-radius: 9px; border: 0; background: var(--accent); color: var(--accent-ink); font: 600 15px system-ui; cursor: pointer; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="logo" aria-hidden="true"></div>
+    <div><h1>Craftie</h1><p>Your AI helper in Minecraft</p></div>
+    <span class="pill" id="pill">Not running</span>
+  </header>
+
+  <div class="status" id="status"><b id="statusTitle"></b><span id="statusMsg"></span>
+  </div>
+
+  <section id="live" class="card">
+    <h2>What Craftie is doing</h2>
+    <div id="feed" class="hide-tech"></div>
+    <form class="say" id="sayForm"><input type="text" id="sayInput" placeholder='Tell Craftie something, like "get 10 wood"' autocomplete="off"><button>Send</button></form>
+    <label class="check"><input type="checkbox" id="techToggle"> Show technical details</label>
+  </section>
+
+  <form id="setup">
+    <section class="card">
+      <h2><span class="num">1</span>You</h2>
+      <div class="row">
+        <div><label class="f" for="playerName">Your Minecraft name</label><input type="text" id="playerName" placeholder="The name you use in SKlauncher" required></div>
+        <div><label class="f" for="botName">Your helper's name</label><input type="text" id="botName" value="Craftie"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">2</span>Pick an AI brain</h2>
+      <div class="opts" id="aiList"></div>
+      <div id="aiExtra"></div>
+      <details class="more">
+        <summary>Speed boost (optional): TypeSafe Jev</summary>
+        <p class="hint">Jev answers simple orders like "come here" or "get 10 oak logs" in a fraction of a second, so Craftie skips the slower AI for those. Get a key at <a href="https://typesafe.ai" target="_blank" rel="noopener">typesafe.ai</a>.</p>
+        <label class="check"><input type="checkbox" id="jevOn"> Use Jev</label>
+        <label class="f" for="jevKey">TypeSafe API key</label><input type="password" id="jevKey" autocomplete="off">
+      </details>
+    </section>
+
+    <section class="card">
+      <h2><span class="num">3</span>Where should Craftie play?</h2>
+      <div class="tabs" role="tablist">
+        <button type="button" class="tab" data-mode="lan">My game (Open to LAN)</button>
+        <button type="button" class="tab" data-mode="server">A server or friend's game</button>
+      </div>
+
+      <div data-panel="lan">
+        <ol class="hint" style="padding-left:18px;margin:4px 0 0">
+          <li>Open your world in Minecraft.</li>
+          <li>Press <b>Esc → Open to LAN</b>. With the Custom LAN mod, set <b>Online Mode: Off</b> (needed for offline accounts).</li>
+          <li>Click <b>Start LAN World</b>. Craftie finds it and joins by itself.</li>
+        </ol>
+      </div>
+      <div data-panel="server" hidden>
+        <label class="f" for="address">Server address</label>
+        <input type="text" id="address" placeholder="play.example.com or 192.168.1.20:25565">
+        <label class="f" for="password">Login password for Craftie (only if the server asks for /register or /login)</label>
+        <input type="password" id="password" autocomplete="off">
+        <p class="hint">Works with offline-mode servers and friends' worlds. Craftie joins as an extra player.</p>
+      </div>
+
+      <p class="hint">Only you can give Craftie orders. Anyone else's messages are ignored.</p>
+
+    </section>
+
+    <label class="check" style="margin:0 4px 12px"><input type="checkbox" id="autostart" checked> Start Craftie when I log in, so it's ready in every world (recommended)</label>
+    <button class="big" id="go" type="submit">Save and start Craftie</button>
+    <p class="hint" style="text-align:center">You only do this once. Craftie then waits in the background and joins whenever you open a world to LAN.<br>To come back here, type <b>!ai settings</b> in Minecraft chat.</p>
+  </form>
+  <button class="big stop" id="stop" type="button" hidden>Stop Craftie</button>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const TOKEN = '__CRAFTIE_TOKEN__';
+history.replaceState(null, '', '/'); // keep the token out of the address bar and history
+const api = (path, opts = {}) => fetch(path, { ...opts, headers: { 'x-craftie-token': TOKEN, 'content-type': 'application/json' } });
+let state = null, mode = 'lan';
+
+const MODELS = { 'claude-api': 'claude-sonnet-5-5', openai: 'gpt-5', deepseek: 'deepseek-chat', openrouter: '', custom: '' };
+const NEEDS_KEY = ['claude-api', 'openai', 'openrouter', 'deepseek', 'custom'];
+
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.dataset.mode === m));
+  document.querySelectorAll('[data-panel]').forEach((p) => (p.hidden = p.dataset.panel !== m));
+}
+document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => setMode(t.dataset.mode)));
+
+function renderAIs(selected) {
+  const list = $('aiList');
+  list.innerHTML = '';
+  for (const ai of state.ais) {
+    const el = document.createElement('label');
+    el.className = 'opt';
+    el.innerHTML = `<input type="radio" name="ai" value="${ai.id}"><span><b>${ai.label}${ai.ready ? '<span class="badge">Ready</span>' : ''}</b><small>${ai.note}</small></span>`;
+    el.querySelector('input').checked = ai.id === selected;
+    el.querySelector('input').addEventListener('change', () => renderExtra());
+    list.appendChild(el);
+  }
+  renderExtra();
+}
+
+function renderExtra() {
+  const id = document.querySelector('input[name=ai]:checked')?.value;
+  const saved = state.setup?.ai?.id === id ? state.setup.ai : {};
+  const ai = state.ais.find((a) => a.id === id);
+  let html = '';
+  if (NEEDS_KEY.includes(id)) {
+    const keySaved = state.setup?.ai?.id === id && state.saved.ai;
+    html += `<label class="f" for="apiKey">API key</label><input type="password" id="apiKey" autocomplete="off" placeholder="${keySaved ? 'Saved ✓ (leave empty to keep it)' : 'Paste your key'}">`;
+    html += `<p class="hint">Keys are encrypted and locked to this PC. They are never shown again.</p>`;
+    html += `<label class="f" for="model">Model</label><input type="text" id="model" value="${saved.model ?? MODELS[id] ?? ''}" placeholder="Model name">`;
+  }
+  if (id === 'custom') html += `<label class="f" for="baseUrl">API address</label><input type="text" id="baseUrl" value="${saved.baseUrl ?? ''}" placeholder="https://.../v1">`;
+  if ((id === 'ollama' || id === 'lmstudio') && ai?.models?.length) {
+    html += `<label class="f" for="model">Model</label><select id="model">${ai.models.map((m) => `<option ${m === saved.model ? 'selected' : ''}>${m}</option>`).join('')}</select>`;
+  }
+  $('aiExtra').innerHTML = html;
+}
+
+
+async function load() {
+  state = await (await api('/api/state')).json();
+  const s = state.setup;
+  $('playerName').value = s?.playerName ?? state.guessedName ?? '';
+  $('botName').value = s?.botName ?? 'Craftie';
+  $('address').value = s?.play?.address ?? '';
+  $('password').placeholder = state.saved.login ? 'Saved ✓ (leave empty to keep it)' : 'Optional';
+  $('jevOn').checked = !!s?.jev?.enabled;
+  $('jevKey').placeholder = state.saved.jev ? 'Saved ✓ (leave empty to keep it)' : 'Paste your TypeSafe key';
+  $('autostart').checked = s ? !!state.autostart : true;
+  renderAIs(s?.ai?.id ?? (state.ais.find((a) => a.ready)?.id || 'claude-sub'));
+  setMode(s?.play?.mode === 'server' ? 'server' : 'lan');
+  for (const l of state.recent) addLine(l);
+  showStatus(state.status);
+}
+
+
+function collect() {
+  const id = document.querySelector('input[name=ai]:checked')?.value;
+  return {
+    playerName: $('playerName').value.trim(),
+    botName: $('botName').value.trim() || 'Craftie',
+    ai: { id, apiKey: $('apiKey')?.value || undefined, model: $('model')?.value || undefined, baseUrl: $('baseUrl')?.value || undefined },
+    jev: { enabled: $('jevOn').checked, apiKey: $('jevKey').value || undefined },
+    play: { mode, address: $('address').value.trim() || undefined, password: $('password').value || undefined },
+    autostart: $('autostart').checked,
+  };
+}
+
+$('setup').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('go').disabled = true;
+  $('feed').innerHTML = '';
+  await api('/api/start', { method: 'POST', body: JSON.stringify(collect()) });
+  $('apiKey') && ($('apiKey').value = ''); $('jevKey').value = ''; $('password').value = '';
+});
+$('stop').addEventListener('click', async () => { $('stop').disabled = true; await api('/api/stop', { method: 'POST' }); $('stop').disabled = false; });
+
+const TITLES = { starting: 'Getting ready...', waiting: 'Almost there...', joined: 'Craftie is in your game!', error: 'Something went wrong', idle: '' };
+function showStatus(s) {
+  const running = ['starting', 'waiting', 'joined'].includes(s.state);
+  $('pill').textContent = { idle: 'Not running', starting: 'Starting', waiting: 'Connecting', joined: 'Playing', error: 'Error' }[s.state];
+  $('pill').classList.toggle('on', s.state === 'joined');
+  $('status').style.display = s.state === 'idle' ? 'none' : 'block';
+  $('status').classList.toggle('err', s.state === 'error');
+  $('statusTitle').textContent = TITLES[s.state];
+  $('statusMsg').textContent = s.message;
+  $('setup').hidden = running;
+  $('stop').hidden = !running;
+  $('live').style.display = running ? 'block' : 'none';
+  $('go').disabled = false;
+}
+
+// Turn raw bot logs into a friendly feed. Everything else is "technical".
+function friendly(line) {
+  let m;
+  if ((m = line.match(/^\[brain\] (?!Jev|busy|attacked)([^:\s]+(?: \([^)]*\))?): (.+)$/)) && !/ms:/.test(line)) return ['💬 ' + m[1].replace(/ \(.*\)/, '') + ': ' + m[2]];
+  if ((m = line.match(/^\[brain\] \S+ \d+ms: (.*)$/))) {
+    try { const p = JSON.parse(m[1].slice(m[1].indexOf('{'), m[1].lastIndexOf('}') + 1)); if (p.say) return ['🤖 ' + p.say, line]; } catch {}
+    return [null, line];
+  }
+  if ((m = line.match(/^\[brain\]\s+(\w+)\(.*?\) -> (.*)$/))) return [(/^(ERROR|can't|no |need|missing)/i.test(m[2]) ? '⚠️ ' : '✅ ') + m[2], line];
+  if ((m = line.match(/^\[brain\] attacked by (\S+) -> (\w+)/))) return [`⚔️ Attacked by ${m[1]}, decided to ${m[2]}`];
+  if ((m = line.match(/^\[mc\] (spawned.*|found LAN.*|kicked.*|disconnected.*|sent \/\w+)/))) return ['🎮 ' + m[1]];
+  return [null, line];
+}
+function addLine(line) {
+  const [nice, tech] = friendly(line);
+  const feed = $('feed');
+  const stick = feed.scrollTop + feed.clientHeight >= feed.scrollHeight - 20;
+  if (nice) { const d = document.createElement('div'); d.textContent = nice; feed.appendChild(d); }
+  if (tech) { const d = document.createElement('div'); d.className = 'tech'; d.textContent = tech; feed.appendChild(d); }
+  while (feed.children.length > 400) feed.firstChild.remove();
+  if (stick) feed.scrollTop = feed.scrollHeight;
+}
+$('techToggle').addEventListener('change', (e) => $('feed').classList.toggle('hide-tech', !e.target.checked));
+
+$('sayForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = $('sayInput').value.trim();
+  if (!text) return;
+  $('sayInput').value = '';
+  await api('/api/command', { method: 'POST', body: JSON.stringify({ text }) });
+});
+document.querySelectorAll('.copy').forEach((b) => b.addEventListener('click', () => {
+  navigator.clipboard?.writeText($(b.dataset.copy).textContent);
+  b.textContent = 'Copied'; setTimeout(() => (b.textContent = 'Copy'), 1200);
+}));
+
+const es = new EventSource('/api/events?t=' + encodeURIComponent(TOKEN));
+es.addEventListener('status', (e) => showStatus(JSON.parse(e.data)));
+es.addEventListener('log', (e) => addLine(JSON.parse(e.data)));
+load();
+</script>
+</body>
+</html>

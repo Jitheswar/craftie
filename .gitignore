@@ -1,0 +1,29 @@
+# Dependencies and downloaded runtimes
+node_modules/
+runtime/
+
+# Personal settings (your name, choices) and local config. Keys are never in the project at all:
+# they live encrypted in ~/.craftie/vault.json.
+craftie.setup.json
+craftie.config.json
+.env
+.env.*
+
+# Generated / local data
+worlds/
+*.log
+*.db
+*.db-*
+
+# Mod build output and caches (jars in mods/builds/ are kept)
+mods/*/build/
+mods/*/.gradle/
+mods/*/run/
+mods/work-*/
+mods/build-*.log
+.gradle/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

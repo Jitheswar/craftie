@@ -1,0 +1,80 @@
+{
+  "minecraft": {
+    "host": "lan",
+    "username": "Craftie",
+    "auth": "offline",
+    "password": "",
+    "owners": [
+      "YourMinecraftName"
+    ],
+    "prefixes": [
+      "!ai",
+      "craftie",
+      "@craftie"
+    ],
+    "replyWhisper": false,
+    "viewerPort": 3007,
+    "allowParkour": true,
+    "canDig": true,
+    "autoReconnect": true,
+    "chatPatterns": []
+  },
+  "brain": {
+    "provider": "claude-sub",
+    "maxSteps": 20,
+    "historyLimit": 14,
+    "verbose": true
+  },
+  "jev": {
+    "enabled": false,
+    "apiKey": "",
+    "model": "jev-latest"
+  },
+  "providers": {
+    "claude-sub": {
+      "type": "claude-cli",
+      "model": "sonnet"
+    },
+    "codex-sub": {
+      "type": "codex-cli"
+    },
+    "claude-api": {
+      "type": "anthropic",
+      "apiKeyEnv": "ANTHROPIC_API_KEY",
+      "model": "claude-sonnet-5-5"
+    },
+    "claude-fast": {
+      "type": "anthropic",
+      "apiKeyEnv": "ANTHROPIC_API_KEY",
+      "model": "claude-haiku-5-5"
+    },
+    "openai": {
+      "type": "openai",
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "model": "PUT-MODEL-HERE"
+    },
+    "openrouter": {
+      "type": "openai",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "model": "PUT-MODEL-HERE"
+    },
+    "deepseek": {
+      "type": "openai",
+      "baseUrl": "https://api.deepseek.com/v1",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "model": "deepseek-chat"
+    },
+    "ollama": {
+      "type": "openai",
+      "baseUrl": "http://localhost:11434/v1",
+      "model": "qwen3:8b"
+    },
+    "lmstudio": {
+      "type": "openai",
+      "baseUrl": "http://localhost:1234/v1",
+      "model": "local-model"
+    }
+  }
+}

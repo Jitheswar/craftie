@@ -1,0 +1,20 @@
+{
+	"schemaVersion": 1,
+	"id": "craftie_autolan",
+	"version": "${version}",
+	"name": "Craftie Auto LAN",
+	"description": "Opens every singleplayer world to LAN (Online Mode off) as soon as it loads, so the Craftie AI helper can join without clicks. Turn off in config/craftie-autolan.properties.",
+	"authors": ["Craftie"],
+	"license": "MIT",
+	"icon": "assets/craftie_autolan/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": ["dev.craftie.autolan.AutoLan"]
+	},
+	"depends": {
+		"fabricloader": ">=0.15.0",
+		"minecraft": "~1.20.1",
+		"java": ">=17",
+		"fabric-api": "*"
+	}
+}
