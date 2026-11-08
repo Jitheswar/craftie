@@ -42,7 +42,8 @@ async function scanLocal(prefer?: string): Promise<LanWorld | null> {
   const results = (await Promise.all(localPorts().map(async (port) => ({ port, motd: await ping('127.0.0.1', port) })))).filter((r) => r.motd !== null);
   // Opened-to-LAN worlds are named "<player> - <world>": prefer the owner's, then any LAN world, then anything.
   const score = (m: string) => (prefer && m.toLowerCase().startsWith(prefer.toLowerCase() + ' - ') ? 2 : / - /.test(m) ? 1 : 0);
-  const hit = results.sort((a, b) => score(b.motd!) - score(a.motd!))[0];
+  // Only worlds actually opened to LAN (named "<player> - <world>"), never some other server on this PC.
+  const hit = results.filter((r) => score(r.motd!) >= 1).sort((a, b) => score(b.motd!) - score(a.motd!))[0];
   return hit ? { host: '127.0.0.1', port: hit.port, motd: hit.motd! } : null;
 }
 

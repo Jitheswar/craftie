@@ -201,7 +201,7 @@ export async function placeNear(bot: any, itemName: string, at?: Vec3) {
   }
   for (const t of targets) {
     const here = bot.blockAt(t);
-    if (!here || !['air', 'cave_air', 'short_grass', 'grass', 'tall_grass', 'snow'].includes(here.name)) continue;
+    if (!here || !['air', 'cave_air', 'short_grass', 'grass', 'tall_grass', 'snow', 'lava', 'water'].includes(here.name)) continue;
     for (const f of faces) {
       const ref = bot.blockAt(t.minus(f));
       if (ref && ref.boundingBox === 'block') {

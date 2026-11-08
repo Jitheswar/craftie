@@ -122,6 +122,7 @@ export class Brain {
     this.owner = cfg.owner ?? '';
     if (this.owner) setTimeout(() => this.idle(), 3000);
     setInterval(() => this.maybeChore().catch((e) => console.error('[brain]', e)), 15000);
+    setInterval(() => this.lookAround().catch((e) => console.error('[brain]', e)), 2000);
     // Chores never drag Craftie away: if the player walks off, drop the chore and follow.
     setInterval(() => {
       const leash = this.current?.startsWith('chore: treasure') ? 24 : 40;
@@ -247,6 +248,40 @@ export class Brain {
    * Like a coworker: when there's no job from the player, get what Craftie itself needs
    * (food, tools, weapon, armor, a bed, supplies), staying near the player.
    */
+  private lastRemark = 0;
+
+  /**
+   * Environment awareness (plain code, no AI): warn about threats and deal with them, feed the
+   * player when they're hurt, mention sights now and then, and remember places.
+   */
+  private async lookAround() {
+    if (!this.owner) return;
+    for (const ev of this.body.scanAround(this.owner)) {
+      // Quiet teammate: it acts on what it notices instead of announcing it.
+      this.log(`noticed: ${ev.text}`);
+      if (ev.kind === 'place' && ev.place) {
+        this.memory2.remember([`${ev.place.what} at ${ev.place.x} ${ev.place.y} ${ev.place.z}`]);
+        this.memory2.journal(`found a ${ev.place.what} at ${ev.place.x} ${ev.place.y} ${ev.place.z}`);
+      }
+      if (ev.attack && !this.fighting && !this.current?.startsWith('defend')) {
+        this.fighting = true;
+        this.body.interrupt((signal) => this.body.runSkill('attack', { target: ev.attack!, chase: true }, signal)).finally(() => { this.fighting = false; });
+      }
+      if (ev.feedPlayer) {
+        const food = this.body.describeState().match(/inventory: ([^\n]*)/)?.[1]?.match(/(cooked_\w+|bread|baked_potato|golden_carrot|apple)x\d+/)?.[1];
+        if (food) this.body.interrupt(async (signal) => this.log(`fed ${this.owner}: ${await this.body.runSkill('give', { player: this.owner, item: food, count: 4 }, signal).catch((e) => 'ERROR ' + e.message)}`));
+        else this.log('wanted to feed the player but have no food');
+      }
+      if (ev.coverLava) {
+        const block = ['cobblestone', 'dirt', 'cobbled_deepslate', 'netherrack', 'stone'].find((b) => new RegExp(`\\b${b}x\\d`).test(this.body.describeState()));
+        if (block) this.body.interrupt(async (signal) => this.log(`covered lava: ${await this.body.runSkill('place', { item: block, ...ev.coverLava }, signal).catch((e) => 'ERROR ' + e.message)}`));
+      }
+      if (ev.lightAt && /\btorchx\d/.test(this.body.describeState())) {
+        this.body.interrupt(async (signal) => this.log(`torch: ${await this.body.runSkill('place', { item: 'torch', ...ev.lightAt }, signal).catch((e) => 'ERROR ' + e.message)}`));
+      }
+    }
+  }
+
   private announcedStash = false;
 
   private async maybeChore() {
@@ -285,8 +320,7 @@ export class Brain {
     const skip = new Set([...this.choreSkip].filter(([, until]) => until > now).map(([k]) => k));
     const chore = this.body.nextChore(skip);
     if (!chore) return;
-    this.log(`chore: ${chore.why} (${chore.item})`);
-    this.say(`Making myself ${chore.why}.`);
+    this.log(`chore: ${chore.why} (${chore.item})`); // quiet: no chat for its own chores
     const act = chore.item === '__tidy' ? { skill: 'tidy', args: {} } : { skill: 'obtain', args: { item: chore.item, count: chore.count, nearby: true } };
     await this.startTask('self', `chore: ${chore.why} (${chore.item})`, [act], false, true);
     if (!/-> done$/.test(this.memory.at(-1) ?? '')) this.choreSkip.set(chore.item, now + 10 * 60_000);

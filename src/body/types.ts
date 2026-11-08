@@ -36,6 +36,8 @@ export interface Body {
   nextChore(skip: Set<string>): { item: string; count: number; why: string } | null;
   /** Something valuable nearby: grab it (safe and close) or report it (deep/risky). */
   findTreasure(owner: string | null): any;
+  /** What's going on around us right now (threats, sights, places worth remembering). */
+  scanAround(owner: string | null): { key: string; kind: 'warn' | 'sight' | 'place'; text: string; priority: number; attack?: string; place?: any; feedPlayer?: boolean }[];
   /** Is this player close by (so chores don't drag Craftie away from them)? */
   isNear(player: string, blocks: number): boolean;
   /** Keep near this player at a safe distance in the background (null = stop). */

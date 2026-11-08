@@ -12,6 +12,8 @@ export type Event = {
   attack?: string;      // entity name/username to deal with
   place?: { what: string; x: number; y: number; z: number };
   feedPlayer?: boolean;
+  coverLava?: { x: number; y: number; z: number };
+  lightAt?: { x: number; y: number; z: number };
 };
 
 const HOSTILE_NEAR_PLAYER: Record<string, string> = {
@@ -61,10 +63,26 @@ export function scan(bot: Bot, owner: string | null): Event[] {
 
   // The player in trouble.
   if (o) {
-    const hp = (b.players?.[owner!]?.entity?.metadata?.[9]) as number | undefined; // health (living entity metadata)
+    const md = o.metadata ?? [];
+    const hp = typeof md[9] === 'number' ? (md[9] as number) : undefined; // LivingEntity health (index 9 since 1.17)
     if (typeof hp === 'number' && hp > 0 && hp <= 6 && fresh('lowhp', 45_000)) out.push({ key: 'lowhp', kind: 'warn', text: `You're hurt (${Math.ceil(hp / 2)} hearts). Here, have some food.`, priority: 3, feedPlayer: true });
-    const lava = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, -1, 0]].some(([x, y, z]) => (bot.blockAt(o.position.floored().offset(x, y, z))?.name ?? '').includes('lava'));
-    if (lava && fresh('lava', 30_000)) out.push({ key: 'lava', kind: 'warn', text: 'Lava right next to you, careful!', priority: 3 });
+    const op = o.position.floored();
+    for (const [x, y, z] of [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, -1, 0], [1, -1, 0], [-1, -1, 0], [0, -1, 1], [0, -1, -1]]) {
+      const lp = op.offset(x, y, z);
+      if ((bot.blockAt(lp)?.name ?? '').includes('lava') && fresh(`lava:${lp.x},${lp.y},${lp.z}`, 20_000)) {
+        out.push({ key: 'lava', kind: 'warn', text: 'Lava right next to you, careful!', priority: 3, coverLava: { x: lp.x, y: lp.y, z: lp.z } });
+        break;
+      }
+    }
+    // Dark and underground around the player: somewhere to put a torch (on the floor near them).
+    const here = bot.blockAt(op);
+    const dark = here && (here as any).skyLight === 0 && ((here as any).light ?? 15) < 5;
+    if (dark && fresh('dark', 15_000)) {
+      for (const [x, z] of [[2, 0], [-2, 0], [0, 2], [0, -2], [2, 2], [-2, -2]]) {
+        const t = op.offset(x, 0, z), floor = bot.blockAt(t.offset(0, -1, 0));
+        if (bot.blockAt(t)?.name.includes('air') && floor?.boundingBox === 'block') { out.push({ key: 'dark', kind: 'sight', text: 'Dark here, placing a torch.', priority: 2, lightAt: { x: t.x, y: t.y, z: t.z } }); break; }
+      }
+    }
   }
 
   // Time and weather.

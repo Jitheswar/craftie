@@ -11,10 +11,11 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Vec3 } from 'vec3';
 import { canUseCommands, describe, vocab } from './perception.ts';
-import { equipBest, flyRoute, flyTo, skills } from './skills.ts';
+import { equipBest, flyRoute, flyTo, skills, sleep } from './skills.ts';
 import './autonomy.ts'; // adds obtain + build to skills
 import { nextChore } from './chores.ts';
 import { findTreasure } from './treasure.ts';
+import { aroundUs, glanceTarget, scan as scanAround } from './awareness.ts';
 
 const { pathfinder, Movements: BaseMovements } = pf as any;
 
@@ -109,6 +110,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
 
   // Blocks the player placed, so Craftie never breaks *their* builds (saved per world).
   const ownerBuilt = new Set<string>();
+  if (process.env.CRAFTIE_DEBUG) (globalThis as any).__craftieOwnerBuilt = ownerBuilt;
 
   // Home + chest memory, saved per world (keyed by LAN world name or server address).
   let worldKey = '';
@@ -365,6 +367,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
     // Follow has two modes. "steer": walk/swim straight toward the player like a person would
     // (no pathfinder, nothing to get stuck on). "path": the pathfinder, only for climbing up to
     // them or going around obstacles, and re-planned as soon as they move.
+    let glance: { e: any; until: number } | null = null;
     let mode: 'steer' | 'path' = 'steer', stuckSince = 0, lastDist = 0, pathUntil = 0, pathFrom: any = null;
     const ownerEntity = () => Object.values(bot.entities as Record<string, any>).find((x) => x.username === followTarget);
     const isFollowGoal = () => bot.pathfinder.goal instanceof (pf as any).goals.GoalFollow;
@@ -397,7 +400,17 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
       const e = ownerEntity();
       if (!e) { stopSteer(); return; }
       const me = bot.entity.position, flat = Math.hypot(e.position.x - me.x, e.position.z - me.z);
-      if (flat < 3) { stopSteer(); lookSmooth(e.position.offset(0, 1.5, 0), 0.08); return; } // calmly look at you
+      if (flat < 3) {
+        stopSteer();
+        // Mostly look at you; now and then glance at something interesting nearby, like a person would.
+        if (!glance || Date.now() > glance.until) {
+          const g = Math.random() < 0.004 ? glanceTarget(bot, followTarget) : null; // ~every 12s on average
+          glance = g ? { e: g, until: Date.now() + 1500 + Math.random() * 1500 } : null;
+        }
+        if (glance && bot.entities[glance.e.id]) lookSmooth(glance.e.position.offset(0, glance.e.height ?? 1, 0), 0.08);
+        else lookSmooth(e.position.offset(0, 1.5, 0), 0.08);
+        return;
+      }
       // Walking: face where we're going, eyes near the horizon (not staring at your face every tick).
       lookSmooth(e.position.offset(0, 1.2, 0), 0.25, true);
       // Look one step ahead: don't walk off a big drop or into lava; hop up single blocks.
@@ -422,14 +435,83 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
       if (newB.name === 'air' || newB.name === 'cave_air') { if (ownerBuilt.delete(k)) saveMemory(); return; }
       if (!wasEmpty || newB.boundingBox !== 'block') return;
       const center = newB.position.offset(0.5, 0.5, 0.5);
-      const players = Object.values(bot.entities as Record<string, any>).filter((e) => e.type === 'player' && e.position.offset(0, 1.6, 0).distanceTo(center) < 6);
+      const players = Object.values(bot.entities as Record<string, any>).filter((e) => e.type === 'player' && e !== bot.entity && e.position.offset(0, 1.6, 0).distanceTo(center) < 6);
       const nearest = players.sort((a, b) => a.position.distanceTo(center) - b.position.distanceTo(center))[0];
+      if (process.env.CRAFTIE_DEBUG) console.log(`[debug] block ${newB.name} at ${k}: nearest player ${nearest?.username ?? '-'} holding ${nearest?.heldItem?.name ?? nearest?.equipment?.[0]?.name ?? '?'}`);
       if (!nearest || !isPrimary(nearest.username)) return;
       const held = nearest.heldItem?.name ?? nearest.equipment?.[0]?.name;
       if (held && !bot.registry.blocksByName[held] && !/(_bucket|_seeds|sapling)$/.test(held)) return;
       ownerBuilt.add(k);
       saveMemory();
     });
+
+    // Stuck watchdog: should be moving (following, or a job walking somewhere) but hasn't for ~4s ->
+    // look at what's around and take the cheapest way out.
+    let lastPos: any = null, stillSince = 0, unsticking = false;
+    setInterval(async () => {
+      if (!bot.entity || unsticking || bot.craftiePause) return;
+      const o = followTarget ? Object.values(bot.entities as Record<string, any>).find((x) => x.username === followTarget) : null;
+      const wantsToMove = (o && o.position.distanceTo(bot.entity.position) > 5) || bot.pathfinder?.isMoving?.();
+      const pos = bot.entity.position;
+      if (!wantsToMove || !lastPos || pos.distanceTo(lastPos) > 0.6) { lastPos = pos.clone(); stillSince = Date.now(); return; }
+      if (Date.now() - stillSince < 4000) return;
+      unsticking = true;
+      try {
+        const how = await unstick(o?.position ?? (bot.pathfinder?.goal && typeof bot.pathfinder.goal.x === 'number' ? new Vec3(bot.pathfinder.goal.x, bot.pathfinder.goal.y ?? pos.y, bot.pathfinder.goal.z) : null));
+        console.log(`[mc] stuck -> ${how}`);
+      } catch (e: any) { console.log('[mc] stuck, escape failed:', e.message); }
+      finally { unsticking = false; stillSince = Date.now(); lastPos = bot.entity.position.clone(); }
+    }, 1000);
+
+    /** Work out why we're stuck and take the cheapest way out. Returns what it did. */
+    const unstick = async (toward: any): Promise<string> => {
+      const me = bot.entity.position.floored();
+      if (bot.vehicle) { bot.dismount(); return 'got out of the vehicle'; }
+      const around = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      const solid = (v: any) => { const b = bot.blockAt(v); return !!b && b.boundingBox === 'block'; };
+      const mine = (v: any) => ownerBuilt.has(`${v.x},${v.y},${v.z}`);
+      // 1. Sticky stuff at our feet/head: break it.
+      for (const v of [me, me.offset(0, 1, 0)]) {
+        const b = bot.blockAt(v);
+        if (b && /cobweb|sweet_berry_bush|powder_snow|vine|kelp|tall_seagrass/.test(b.name)) { await bot.dig(b, true).catch(() => {}); return `broke ${b.name} I was caught in`; }
+      }
+      // 2. A closed door in the way (toward the target first): open it.
+      const dir = toward ? toward.minus(bot.entity.position) : new Vec3(1, 0, 0);
+      const order = around.sort(([ax, az], [bx, bz]) => (bx * dir.x + bz * dir.z) - (ax * dir.x + az * dir.z));
+      for (const [x, z] of order) for (const y of [0, 1]) {
+        const b = bot.blockAt(me.offset(x, y, z));
+        if (b && /_door$|_gate$/.test(b.name) && !/iron_/.test(b.name) && !b.getProperties?.().open) { await bot.activateBlock(b).catch(() => {}); return `opened the ${b.name}`; }
+      }
+      const walls = order.filter(([x, z]) => solid(me.offset(x, 0, z)) || solid(me.offset(x, 1, z))).length;
+      const ceiling = solid(me.offset(0, 2, 0));
+      // 3. In a pit (walls around, sky above): go up.
+      if (walls === 4 && !ceiling) {
+        if (bot.game.gameMode === 'creative') { await flyTo(bot, bot.entity.position.offset(0, 3, 0), 2000); return 'flew up out of a pit'; }
+        const blk = bot.inventory.items().find((i: any) => bot.pathfinder.movements.scafoldingBlocks.includes(i.type));
+        if (blk) {
+          await bot.equip(blk, 'hand');
+          bot.setControlState('jump', true); await sleep(350);
+          try { await bot.placeBlock(bot.blockAt(me.offset(0, -1, 0)), new Vec3(0, 1, 0)); } catch {}
+          bot.setControlState('jump', false);
+          return 'pillared up out of a pit';
+        }
+      }
+      // 4. Boxed in (or the only ways are blocked): break the fewest blocks toward the target, never the player's own.
+      for (const [x, z] of order) {
+        const feet = me.offset(x, 0, z), head = me.offset(x, 1, z);
+        if (mine(feet) || mine(head)) continue;
+        const toBreak = [feet, head].filter((v) => solid(v) && (bot.blockAt(v)?.hardness ?? -1) >= 0);
+        if (!toBreak.length) continue;
+        for (const v of toBreak) { const b = bot.blockAt(v); if (b) { await bot.tool?.equipForBlock?.(b).catch?.(() => {}); await bot.dig(b, true).catch(() => {}); } }
+        return `dug ${toBreak.length} block(s) to get out${toward ? ' toward you' : ''}`;
+      }
+      if (ceiling && !mine(me.offset(0, 2, 0))) { const b = bot.blockAt(me.offset(0, 2, 0)); if (b && b.hardness >= 0) { await bot.dig(b, true).catch(() => {}); return 'broke the block above me'; } }
+      // 5. Nothing obvious: hop and sidestep, then the route gets re-planned.
+      bot.pathfinder.setGoal(null);
+      bot.setControlState('jump', true); bot.setControlState('left', true); await sleep(500);
+      bot.setControlState('jump', false); bot.setControlState('left', false);
+      return 'jumped and sidestepped, re-planning';
+    };
 
     // Diagnostics: a small status file, so "where is it / what is it doing" can be answered from outside.
     setInterval(() => {
@@ -571,7 +653,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
   connect();
 
   return {
-    describeState: () => (bot?.entity ? describe(bot) : 'not connected yet'),
+    describeState: () => (bot?.entity ? `${describe(bot)}\n${aroundUs(bot, primary || null)}` : 'not connected yet'),
     skillDocs: () => Object.values(skills).map((s) => '- ' + s.doc).join('\n'),
     async runSkill(name, args, signal) {
       const s = skills[name];
@@ -614,6 +696,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
     onPlayerSleep: (cb) => void playerSleepCbs.push(cb),
     nextChore: (skip) => (bot?.entity ? nextChore(bot, skip) : null),
     findTreasure: (owner) => (bot?.entity ? findTreasure(bot, owner) : null),
+    scanAround: (owner) => (bot?.entity ? scanAround(bot, owner) : []),
     isNear: (player, blocks) => {
       const e = bot?.entity && Object.values(bot.entities as Record<string, any>).find((x) => x.username === player);
       return Boolean(e && e.position.distanceTo(bot.entity.position) <= blocks);
