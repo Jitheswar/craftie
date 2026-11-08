@@ -22,7 +22,8 @@ When you don't need it, it doesn't just stand around. It follows you, watches yo
 - When you go to bed, it sleeps in a bed next to yours, so the night skips and you respawn together.
 
 **Look after itself**
-- Keeps itself fed, armed and equipped, and crafts its own bed.
+- Keeps itself fed, armed and equipped (always wearing its best armor and holding its best weapon), and crafts its own bed.
+- Notices valuables: grabs nearby diamonds, emeralds and good loot by itself. If a find is deep or risky, it tells you where instead of wandering off.
 - Stores extra items in a chest by your bed, and takes only what a job needs.
 - If it dies, it goes back for its things and carries on with what it was doing.
 
@@ -62,6 +63,7 @@ Start a chat message with its name: `craftie …`, `!craftie …`, `@craftie …
 | `craftie relax` / `get to work` | turns its own chores off and on |
 | `craftie pause` / `resume` | stops all AI use to save your usage (following and fighting still work) |
 | `craftie settings` | opens the settings page |
+| `craftie restart` | restarts Craftie (it rejoins in a few seconds) |
 | `/msg Craftie …` | private conversation |
 
 ---
@@ -84,7 +86,7 @@ Pick whichever you have:
 
 | Mod | What it does |
 |---|---|
-| **Craftie Auto LAN** (in [`mods/`](mods/)) | Opens every world to LAN with Online Mode off as soon as you load it, so Craftie joins with no clicks. Ready-made jars for 1.20.1 and 1.20.4 are in `mods/builds/`. |
+| **Craftie Auto LAN** (in [`mods/`](mods/)) | Opens every world to LAN with Online Mode off as soon as you load it, so Craftie joins with no clicks. Ready-made jars for 1.20.1, 1.20.4, 1.21.1 and 1.21.4 are in `mods/builds/`. |
 | **[CustomSkinLoader](https://modrinth.com/mod/customskinloader)** | Gives Craftie a skin in your game: put a skin at `CustomSkinLoader/LocalSkin/skins/Craftie.png` in your game folder. |
 
 Neither mod affects friends joining your world.
@@ -137,7 +139,7 @@ Craftie is young and being built actively.
 **Still being polished:**
 - big survival builds from scratch,
 - build speed,
-- the Auto LAN mod for 1.21+.
+- testing the Auto LAN mod on 1.21+ in a real game.
 
 **Not supported yet:**
 - Bedrock Edition,
