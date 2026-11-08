@@ -16,7 +16,9 @@ When you don't need it, it doesn't just stand around. It follows you, watches yo
 - Simple orders like *"come here"*, *"follow me"* or *"kill that zombie"* happen instantly.
 
 **Look after you**
-- Follows you at a safe distance, walking, swimming, pillaring up after you, or flying with you in creative.
+- Follows you at a safe distance and looks at you like a real player, walking straight to you, swimming at the surface, diving with you underwater, pillaring up after you, or flying beside you in creative.
+- Gets itself unstuck: it breaks through whatever is boxing it in, but never breaks blocks *you* placed (it learns which ones are yours by watching you build).
+- Copies your game mode: you switch to creative or survival, it does too (needs cheats on).
 - Defends you: anyone who attacks you (mob or player) gets dealt with.
 - If you die, it picks up your items before they vanish and gives them back when you ask.
 - When you go to bed, it sleeps in a bed next to yours, so the night skips and you respawn together.
@@ -26,11 +28,13 @@ When you don't need it, it doesn't just stand around. It follows you, watches yo
 - Notices valuables: grabs nearby diamonds, emeralds and good loot by itself. If a find is deep or risky, it tells you where instead of wandering off.
 - Stores extra items in a chest by your bed, and takes only what a job needs.
 - If it dies, it goes back for its things and carries on with what it was doing.
+- A full bag never stops a job: it stores extras or drops junk (dirt, gravel, rotten flesh) and keeps its tools and valuables.
 
 **Talk like a teammate**
 - Answers questions in short, one-line replies that fit Minecraft chat.
 - Remembers things across sessions: *"what were you doing?"*, *"where did you put the iron?"*, *"what kind of houses do I like?"*.
 - Private chat: `/msg Craftie …` keeps the conversation between the two of you.
+- Has a personality of its own, and an adventure journal of what you've done together: first diamonds, close calls, rescues, builds. Edit its personality in `~/.craftie/personality.txt`.
 
 Only **you** can give Craftie orders. Everyone else is ignored.
 
@@ -110,6 +114,8 @@ Neither mod affects friends joining your world.
 - **The builder** turns a design into blocks: it checks materials, clears the site, places blocks with the right facing, and cleans up its scaffolding.
 - **Jev** answers small yes/no and multiple-choice questions about each message and each step result. Code then decides what to do with those answers.
 - **Memory** lives in SQLite with full-text search. Each request only carries the few pieces that matter right now, so it stays small however long you play.
+- **Following** steers directly toward you when you're close, like a person would. It only uses the pathfinder to climb or route around walls, and re-plans as soon as you move.
+- **Diagnostics:** Craftie writes what it's doing (position, mode, who it follows, distance) to `~/.craftie/status.json` every few seconds.
 
 Code map:
 
@@ -128,9 +134,11 @@ Code map:
 Craftie is young and being built actively.
 
 **Works well:**
-- following,
+- following: walking, climbing, swimming, diving and flying,
 - fighting and defending,
 - rescuing items,
+- treasure sense,
+- best gear,
 - the planner,
 - building in creative,
 - memory,
@@ -139,7 +147,13 @@ Craftie is young and being built actively.
 **Still being polished:**
 - big survival builds from scratch,
 - build speed,
+- environment awareness (noticing threats, biomes, villages and the like),
 - testing the Auto LAN mod on 1.21+ in a real game.
+
+**Planned:**
+- long-running projects ("build a village" over several sessions),
+- building from schematic files,
+- several Crafties working together.
 
 **Not supported yet:**
 - Bedrock Edition,
