@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync as require_rm } from 'node:fs';
 import type { JevRouter } from './router.ts';
+import type { Team } from './team.ts';
 
 export type BrainConfig = {
   maxSteps?: number; historyLimit?: number; verbose?: boolean; onSettings?: () => void;
@@ -14,9 +15,19 @@ export type BrainConfig = {
   owner?: string;
   /** "craftie restart": restart the whole program (reloads code and settings). */
   onRestart?: () => void;
+  /** This Craftie's in-game name (helpers are Craftie1, Craftie2...). */
+  name?: string;
+  /** A helper: follows, defends and works on shared project steps; the main Craftie does the talking. */
+  helper?: boolean;
+  /** Shared registry of all Crafties in this world. */
+  team?: Team;
+  /** "craftie join": bring in one more helper Craftie. */
+  onJoin?: () => string;
+  /** "craftie exit": send a helper home (a name, the newest one, or "all"). */
+  onExit?: (who: string | null) => string;
 };
 
-type Plan = { say?: string; actions?: Action[]; done?: boolean; project?: { name: string; steps: { about: string; action: Action }[] } };
+type Plan = { say?: string; actions?: Action[]; done?: boolean; delegate?: { to: string; task: string }[]; project?: { name: string; steps: { about: string; action: Action }[] } };
 
 const PERSONALITY_FILE = join(homedir(), '.craftie', 'personality.txt');
 const DEFAULT_PERSONALITY = `Craftie is the player's loyal Minecraft partner: friendly, upbeat and a little witty, proud of its builds,
@@ -27,7 +38,7 @@ function personality(): string {
   catch { return DEFAULT_PERSONALITY; }
 }
 
-const system = (skillDocs: string) => `You are Craftie, an AI that fully controls a Minecraft player.
+const system = (skillDocs: string, name = 'Craftie', team = '') => `You are ${name}, an AI that fully controls a Minecraft player.
 PERSONALITY: ${personality()}
 The player talks to you through game chat. You act through SKILLS that run fast native code.
 
@@ -64,7 +75,11 @@ Reply with "project" instead of actions:
 Each step is ONE action (usually build or obtain). For builds, give "near": {"dx", "dz"} = offset in blocks from where the
 player is now; space buildings ~14 blocks apart and lay them out sensibly (around a center, paths between). 6-20 steps.
 Craftie then works through the steps by itself when idle, across sessions.
-
+${team ? `
+${team}. These are your helper Crafties (same owner). To split a big job, hand parts to them with
+"delegate": [{"to": "<helper name or any>", "task": "<plain order, e.g. get 32 oak_log>"}] alongside your own actions.
+Delegate only clearly separate parts (gather wood while you mine stone); project steps are shared out automatically.
+` : ''}
 BUILD QUALITY (the player wants builds that look good, not boxes):
 - For a house/home/base, use build {blueprint:"house"}. Size it to the request (small: 5x5, normal: 7x9, big: 9x11).
 - Pick a palette with contrast: stone base (cobblestone/stone_bricks), log pillars, plank walls, darker stairs roof.
@@ -82,7 +97,7 @@ GAME MODE RULES (see the GAME MODE line in STATE):
 - Match the player: if they are in survival, assume they want a fair survival game.`;
 
 // Small prompt for plain chat (no skill docs): far fewer tokens per message.
-const CHAT_SYSTEM = () => `You are Craftie, a friendly AI coworker who plays Minecraft alongside the player.
+const CHAT_SYSTEM = (name = 'Craftie') => `You are ${name}, a friendly AI coworker who plays Minecraft alongside the player.
 PERSONALITY: ${personality()}
 You may "remember" your own tastes as facts starting with "I " (e.g. "I love building with spruce"), and bring up OUR ADVENTURES naturally when it fits.
 Reply with ONLY JSON: {"say": "<ONE short line, ideally under 80 characters>", "remember": ["<optional lasting fact>"], "forget": ["<optional>"]}
@@ -105,6 +120,8 @@ function parsePlan(text: string): Plan {
 
 export class Brain {
   private controller: AbortController | null = null;
+  private timers: any[] = [];
+  private stopped = false;
   private queue: { from: string; text: string }[] = [];
   private current: string | null = null;
   private memory: string[] = []; // short log of finished tasks, so follow-ups like "do it again" work
@@ -127,27 +144,49 @@ export class Brain {
     body.onPlayerDeath((p, d) => this.onPlayerDeath(p, d).catch((e) => console.error('[brain]', e)));
     body.onPlayerSleep((p, bed) => this.onPlayerSleep(p, bed).catch((e) => console.error('[brain]', e)));
     this.owner = cfg.owner ?? '';
+    this.name = cfg.name ?? 'Craftie';
+    if (!cfg.helper) this.memory2.releaseSteps(); // fresh start: nobody is mid-step
+    cfg.team?.add({ name: this.name, helper: !!cfg.helper, busy: () => !!this.current, command: (f, t) => this.command(f, t) });
     if (this.owner) setTimeout(() => this.idle(), 3000);
-    setInterval(() => this.maybeChore().catch((e) => console.error('[brain]', e)), 15000);
-    setInterval(() => this.lookAround().catch((e) => console.error('[brain]', e)), 2000);
+    this.timers.push(setInterval(() => this.maybeChore().catch((e) => console.error('[brain]', e)), 15000));
+    this.timers.push(setInterval(() => this.lookAround().catch((e) => console.error('[brain]', e)), 2000));
     // Chores never drag Craftie away: if the player walks off, drop the chore and follow.
-    setInterval(() => {
+    this.timers.push(setInterval(() => {
       const leash = this.current?.startsWith('chore: treasure') ? 24 : 40;
       if (this.current?.startsWith('chore:') && this.owner && !this.body.isNear(this.owner, leash)) { this.log('player moved away -> dropping chore'); this.abort(); }
-    }, 3000);
+    }, 3000));
   }
 
-  private log(...a: any[]) { if (this.cfg.verbose ?? true) console.log('[brain]', ...a); }
+  private log(...a: any[]) { if (this.cfg.verbose ?? true) console.log(this.cfg.helper ? `[brain ${this.name}]` : '[brain]', ...a); }
 
   /** Instant commands handled with zero AI calls. */
   private reflex(from: string, text: string): boolean {
     const t = text.toLowerCase().replace(/[!.?]+$/, '').trim();
     // Personal commands (follow/stay/stop/relax/settings/my stuff) belong to the player only, not friends.
     const me = !this.cfg.owner || from === this.cfg.owner || from.startsWith('console');
-    if (!me && /^(follow|come with|keep up|stay|wait|don'?t follow|stop|cancel|halt|freeze|nvm|never ?mind|pause|resume|unpause|restart|reboot|reload|relax|take a break|chill|get to work|work|back to work|keep busy|\/?(mod-)?(settings|setup|options|config))\b/.test(t)) {
+    if (!me && /^(follow|come with|keep up|stay|wait|don'?t follow|join|exit|leave|stop|cancel|halt|freeze|nvm|never ?mind|pause|resume|unpause|restart|reboot|reload|relax|take a break|chill|get to work|work|back to work|keep busy|\/?(mod-)?(settings|setup|options|config))\b/.test(t)) {
       this.say(`Sorry ${from}, only ${this.cfg.owner} can tell me that.`);
       return true;
     }
+    // Team: "craftie join" adds a helper, "craftie exit" sends one home ("craftie1 exit" = that one, "exit all" = every helper).
+    if (/^(join|add (a )?helper|bring (a )?(friend|helper)|more help)$/.test(t)) { this.say(this.cfg.onJoin?.() ?? 'Only the main Craftie can bring in helpers.'); return true; }
+    if (/^(exit|leave|go home|dismiss|remove (a )?helper)( all| everyone| helpers)?$/.test(t)) {
+      const all = /( all| everyone| helpers)$/.test(t);
+      const r = this.cfg.onExit?.(this.cfg.helper ? this.name : all ? 'all' : null);
+      if (r) this.say(r);
+      return true;
+    }
+    // Ordering helpers through the main Craftie, no AI: "tell craftie1 to get wood", "have the helpers follow me".
+    const order = !this.cfg.helper && this.cfg.team && t.match(/^(?:tell|have|ask|get|make|send)\s+(?:the\s+)?([a-z0-9_]+|helpers?|everyone|all of them)\s+(?:to\s+)?(.+)$/);
+    if (order && (this.cfg.team!.helpers().some((h) => h.name.toLowerCase() === order[1]) || /^(helpers?|everyone|all of them)$/.test(order[1]))) {
+      const task = text.trim().replace(/^\S+\s+(?:the\s+)?\S+(?:\s+of\s+them)?\s+(?:to\s+)?/i, '');
+      const targets = /^(helpers|everyone|all of them)$/.test(order[1]) ? this.cfg.team!.helpers().map((h) => h.name) : [order[1] === 'helper' ? 'any' : order[1]];
+      const got = targets.map((n) => this.cfg.team!.send(n, from, task)).filter(Boolean);
+      this.log(`passed "${task}" to ${got.join(', ') || 'nobody'}`);
+      this.say(got.length ? `Passed it on to ${got.join(', ')}.` : 'No helpers here. Say "craftie join" to bring one in.');
+      return true;
+    }
+    if (this.cfg.helper && /^(\/?(mod-)?(settings|setup|options|config)|restart|reboot|reload|restart yourself|project status|how'?s the project( going)?|project|(pause|resume|continue|cancel|stop|drop)( the)? project)$/.test(t)) return true; // the main Craftie handles these
     if (/^\/?(mod-)?(settings|setup|options|config)$/.test(t)) {
       if (this.cfg.onSettings) { this.cfg.onSettings(); this.say('Opening settings on the Craftie PC.'); }
       else this.say('Settings page is only available when started with the start file.');
@@ -216,9 +255,9 @@ export class Brain {
       if (choice === 'queue') { this.queue.push({ from, text }); this.say('Queued.'); return; }
       if (choice === 'answer') {
         this.memory2.addTurn(from, text);
-        const r = parsePlan(await this.llm.complete(system(this.body.skillDocs()), [{ role: 'user', content:
+        const r = parsePlan(await this.llm.complete(system(this.body.skillDocs(), this.name, this.cfg.helper ? '' : this.cfg.team?.line() ?? ''), [{ role: 'user', content:
           `${this.memory2.block(text)}\n\nSTATE:\n${this.body.describeState()}\nCURRENT TASK: ${this.current}\nQUESTION from ${from} (answer only, no actions): ${text}` }]));
-        if (r.say) { this.say(r.say); this.memory2.addTurn('Craftie', r.say); }
+        if (r.say) { this.say(r.say); this.memory2.addTurn(this.name, r.say); }
         this.memory2.remember((r as any).remember); this.memory2.forget((r as any).forget);
         return;
       }
@@ -245,6 +284,7 @@ export class Brain {
   }
 
   private owner = '';
+  private name = 'Craftie';
   private currentFrom = ''; // who gave the job that's running
   private privateTo: string | null = null; // replies go privately while the player is whispering
   /** "craftie pause": no main-AI calls at all (saves usage). Code-only behavior keeps working. Survives restarts. */
@@ -315,7 +355,7 @@ export class Brain {
     const now = Date.now();
     // Treasure first: valuables right here are worth a quick detour; deep/risky ones get reported.
     const t = this.body.findTreasure(this.owner);
-    if (t?.kind === 'report') {
+    if (t?.kind === 'report' && !this.cfg.helper) {
       const name = t.block.replace(/^deepslate_|_ore$/g, '').replace(/_/g, ' ');
       this.say(`Found ${name} at ${t.x} ${t.y} ${t.z} (${t.why}). Say "get the ${name}" if you want it.`);
       this.memory2.remember([`${name} spotted at ${t.x} ${t.y} ${t.z} (${t.why})`]);
@@ -341,13 +381,15 @@ export class Brain {
     const basic = this.body.nextChore(skip);
     const urgentNeed = basic && /food|pickaxe|weapon|axe|room in my bag/.test(basic.why);
     const proj = !urgentNeed && !this.projectPaused ? this.memory2.activeProject() : null;
-    const step = proj?.steps.find((st: any) => st.status === 'todo');
-    if (proj && !step) { this.memory2.setProjectStatus(proj.id, 'done'); this.memory2.journal(`finished the "${proj.name}" project!`); this.say(`The ${proj.name} project is finished!`); return; }
+    const step = proj?.steps.find((st: any) => st.status === 'todo' && this.memory2.claimStep(st.id, this.name));
+    const othersOnIt = proj?.steps.some((st: any) => st.status === 'doing');
+    if (proj && !step && (this.cfg.helper || othersOnIt)) { /* teammates are finishing the last steps */ }
+    else if (proj && !step) { this.memory2.setProjectStatus(proj.id, 'done'); this.memory2.journal(`finished the "${proj.name}" project!`); this.say(`The ${proj.name} project is finished!`); return; }
     if (step) {
       this.log(`project "${proj.name}" step ${step.idx + 1}/${proj.steps.length}: ${step.about}`);
       await this.startTask('self', `project ${proj.name}: ${step.about}`, [JSON.parse(step.action)]);
       const last = this.memory.at(-1) ?? '';
-      if (/-> interrupted$/.test(last)) return; // you needed it for something else: not a failure, it'll pick this up later
+      if (/-> interrupted$/.test(last) || !last.startsWith(`"project ${proj.name}: ${step.about}"`)) { this.memory2.releaseStep(step.id); return; } // you needed it for something else: not a failure, it'll pick this up later
       const ok = /-> done$/.test(last);
       if (ok) this.memory2.updateStep(step.id, 'done');
       else if (step.tries >= 1) this.memory2.updateStep(step.id, 'failed', this.memory.at(-1) ?? '');
@@ -363,7 +405,7 @@ export class Brain {
   }
 
   /** Nothing to do: keep near the owner at a safe distance (unless told to stay). */
-  private idle() { if (!this.current && this.following && this.owner) this.body.setFollow(this.owner); }
+  private idle() { if (!this.stopped && !this.current && this.following && this.owner) this.body.setFollow(this.owner); }
   /** For diagnostics: what the brain is doing. */
   status() { return { job: this.current, following: this.following, working: this.working, aiPaused: this.aiPaused, queue: this.queue.length }; }
 
@@ -387,6 +429,7 @@ export class Brain {
 
   /** The owner died: their items vanish in 5 minutes, so drop everything and go get them. */
   private async onPlayerDeath(player: string, d: { x: number; y: number; z: number; cause: string }) {
+    if (this.cfg.helper) return; // the main Craftie saves your things; one holder makes "give me my stuff back" simple
     const job = this.current && !/^(recover|fetch)/.test(this.current) ? this.current : null;
     this.abort();
     this.memory2.journal(`${player} died (${d.cause}) at ${d.x} ${d.y} ${d.z}; I went to save their things`);
@@ -440,7 +483,7 @@ export class Brain {
     const ctl = new AbortController();
     this.controller = ctl;
     this.current = text;
-    const sys = system(this.body.skillDocs());
+    const sys = system(this.body.skillDocs(), this.name, this.cfg.helper ? '' : this.cfg.team?.line() ?? '');
     if (from !== 'self') this.memory2.addTurn(from, text);
     const history: Msg[] = [{ role: 'user', content:
       `${this.memory2.block(text)}\n\nRECENT TASKS:\n${this.memory.slice(-5).join('\n') || 'none'}\n\nSTATE:\n${this.body.describeState()}\n\nMESSAGE from ${from}: ${text}` }];
@@ -459,7 +502,12 @@ export class Brain {
           plan = parsePlan(raw);
         }
         if (ctl.signal.aborted) return;
-        if (plan.say) { this.say(plan.say); this.memory2.addTurn('Craftie', plan.say); }
+        if (plan.say) { this.say(plan.say); this.memory2.addTurn(this.name, plan.say); }
+        for (const d of plan.delegate ?? []) {
+          const who = this.cfg.team?.send(d.to, this.owner || from, d.task);
+          this.log(who ? `handed "${d.task}" to ${who}` : `no helper "${d.to}" for "${d.task}"`);
+          if (who) this.memory2.logActivity(`asked ${who} to ${d.task}`);
+        }
         if (plan.project?.steps?.length) {
           const here = this.body.describeState().match(/pos (-?\d+),(-?\d+),(-?\d+)/)?.slice(1).map(Number) ?? [0, 0, 0];
           const origin = { x: here[0], y: here[1], z: here[2] };
@@ -526,18 +574,18 @@ export class Brain {
     const state = this.body.describeState().split('\n');
     const status = [...state.slice(0, 3), ...state.filter((l) => /^(my chests|home|held for)/.test(l))].join('\n');
     const t0 = Date.now();
-    const raw = await this.llm.complete(CHAT_SYSTEM(), [{ role: 'user', content:
+    const raw = await this.llm.complete(CHAT_SYSTEM(this.name), [{ role: 'user', content:
       `${this.memory2.block(text)}\n\nMY STATUS:\n${status}${this.current ? `\nCURRENTLY DOING: ${this.current}` : ''}\n\n${from}: ${text}` }]);
     this.log(`${this.llm.name} chat ${Date.now() - t0}ms:`, raw.replace(/\s+/g, ' ').slice(0, 200));
     const r = parsePlan(raw);
-    if (r.say) { this.say(r.say); this.memory2.addTurn('Craftie', r.say); }
+    if (r.say) { this.say(r.say); this.memory2.addTurn(this.name, r.say); }
     this.memory2.remember((r as any).remember); this.memory2.forget((r as any).forget);
   }
 
   /** Swap the AI (provider/model/keys) or Jev without stopping anything. */
   setAI(llm: LLM, router: JevRouter | null) { this.llm = llm; this.router = router; this.memory2.setLLM(llm); }
 
-  shutdown() { this.queue = []; this.abort(); }
+  shutdown() { this.stopped = true; this.queue = []; this.timers.forEach(clearInterval); this.abort(); this.cfg.team?.remove(this.name); }
 
   /** Commands typed in the terminal count as coming from the first owner. */
   command(from: string, text: string) { this.onCommand(from, text).catch((e) => console.error(e)); }

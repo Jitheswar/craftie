@@ -38,6 +38,12 @@ When you don't need it, it doesn't just stand around. It follows you, watches yo
 - Private chat: `/msg Craftie …` keeps the conversation between the two of you.
 - Has a personality of its own, and an adventure journal of what you've done together: first diamonds, close calls, rescues, builds. Edit its personality in `~/.craftie/personality.txt`.
 
+**Work as a team**
+- `craftie join` brings in a helper (Craftie1, then Craftie2, then Craftie3). `craftie exit` sends the newest one home, `craftie1 exit` sends that one, `craftie exit all` sends them all. Helpers come back on their own the next time you play.
+- Helpers follow you (a little further back, so nobody crowds you), defend you, and never fight each other.
+- Big projects are shared out: in *"build a village"*, each Craftie takes a different house, so they go up at the same time.
+- Order a helper directly (`craftie1 get 32 oak_log`), through the main Craftie (`craftie tell craftie1 to mine stone`, `craftie have the helpers follow me`), or everyone at once (`team follow me`). On a big job, the main Craftie hands parts to free helpers by itself.
+
 Only **you** can give Craftie orders. Everyone else is ignored.
 
 ---
@@ -67,6 +73,8 @@ Start a chat message with its name: `craftie …`, `!craftie …`, `@craftie …
 | `craftie come here` / `follow me` / `stay` | instant |
 | `craftie give me my stuff back` | returns the items it saved when you died |
 | `craftie what were you doing?` | answers from its memory |
+| `craftie join` / `craftie exit` | adds a helper Craftie / sends one home |
+| `craftie tell craftie1 to …` | passes an order to a helper |
 | `craftie relax` / `get to work` | turns its own chores off and on |
 | `craftie pause` / `resume` | stops all AI use to save your usage (following and fighting still work) |
 | `craftie settings` | opens the settings page |
@@ -146,15 +154,13 @@ Craftie is young and being built actively.
 - building in creative,
 - memory,
 - Jev routing,
+- teams of up to 4 Crafties (`craftie join`),
 - long-running projects (*"build a village"* is split into steps and carried on across sessions; `craftie project status` / `pause` / `resume` / `cancel`).
 
 **Still being polished:**
 - big survival builds from scratch,
 - build speed (a cottage takes about 4 minutes in survival),
 - testing the Auto LAN mod on 1.21+ in a real game.
-
-**Planned:**
-- several Crafties working together.
 
 **Not supported yet:**
 - Bedrock Edition,

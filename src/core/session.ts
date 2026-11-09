@@ -10,6 +10,12 @@ import { makeLLM, type ProviderConfig } from '../llm/index.ts';
 import { Jev } from '../llm/jev.ts';
 import { JevRouter } from '../brain/router.ts';
 import { getSecret, hasSecret, setSecret } from './secrets.ts';
+import { Team } from '../brain/team.ts';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+const HELPERS_FILE = join(homedir(), '.craftie', 'helpers.json');
+const MAX_HELPERS = 3;
 
 export type Setup = {
   playerName: string;
@@ -85,6 +91,11 @@ export class Session extends EventEmitter {
   private body: Body | null = null;
   private brain: Brain | null = null;
   private setup: Setup | null = null;
+  private team = new Team();
+  private helpers: { name: string; body: Body; brain: Brain }[] = [];
+  private mcBase: MinecraftConfig | null = null;
+  private llm: any = null;
+  private router: JevRouter | null = null;
 
   private set(s: Status) { this.status = s; this.emit('status', s); }
   log(text: string) { this.emit('log', text); }
@@ -121,14 +132,24 @@ export class Session extends EventEmitter {
         host = m[1]; port = m[2] ? Number(m[2]) : 25565;
       }
       this.set({ state: 'waiting', message: setup.play.mode === 'server' ? 'Craftie is joining...' : 'Waiting for your game: open your world, then Esc → Open to LAN.' });
+      const name = setup.botName || 'Craftie';
+      this.team = new Team();
       const mc: MinecraftConfig = {
-        host, port, username: setup.botName || 'Craftie', auth: 'offline',
+        host, port, username: name, auth: 'offline',
         owners: [setup.playerName.trim()], // only the player can command Craftie
-        prefixes: ['!ai', 'craftie', '@craftie'],
+        prefixes: ['!ai', 'craftie', '@craftie', 'team', 'crafties'],
         password: setup.play.password || undefined, autoReconnect: true, viewerPort: 0,
+        team: this.team.names,
       };
+      this.mcBase = mc; this.llm = llm; this.router = router;
       this.body = createMinecraftBody(mc);
-      this.brain = new Brain(this.body, llm, router, { verbose: true, onSettings: () => this.onSettings(), onRestart: () => this.onRestart(), owner: setup.playerName.trim() });
+      this.brain = new Brain(this.body, llm, router, {
+        verbose: true, onSettings: () => this.onSettings(), onRestart: () => this.onRestart(), owner: setup.playerName.trim(),
+        name, team: this.team, onJoin: () => this.addHelper(), onExit: (who) => this.removeHelper(who),
+      });
+      // Helpers who were on the team last time come back too (once the main Craftie is in).
+      const saved = this.savedHelpers();
+      if (saved.length) setTimeout(() => { for (const n of saved) if (this.body) this.addHelper(n, true); }, 8000);
     } catch (e: any) {
       this.set({ state: 'error', message: e.message });
       await this.stop(true);
@@ -151,6 +172,8 @@ export class Session extends EventEmitter {
     const llm = makeLLM(next.ai.id, providerFor(next.ai));
     const router = next.jev?.enabled && (next.jev.apiKey || process.env.TYPESAFE_API_KEY) ? new JevRouter(new Jev({ apiKey: next.jev.apiKey })) : null;
     this.brain.setAI(llm, router);
+    for (const h of this.helpers) h.brain.setAI(llm, router);
+    this.llm = llm; this.router = router;
     this.setup = next;
     this.log(`[craftie] settings applied live (AI: ${next.ai.id}${router ? ', Jev on' : ''})`);
     return 'live';
@@ -168,12 +191,54 @@ export class Session extends EventEmitter {
       this.set({ state: 'waiting', message: 'Waiting for your game: open your world, then Esc → Open to LAN (Online Mode off).' });
   }
 
+  private savedHelpers(): string[] { try { return JSON.parse(readFileSync(HELPERS_FILE, 'utf8')).slice(0, MAX_HELPERS); } catch { return []; } }
+  private saveHelpers() { try { writeFileSync(HELPERS_FILE, JSON.stringify(this.helpers.map((h) => h.name))); } catch {} }
+
+  /** "craftie join": one more Craftie (Craftie1, Craftie2...). Same owner, same AI, shared memory and projects. */
+  addHelper(wanted?: string, quiet = false): string {
+    if (!this.mcBase || !this.body) return "I'm not in a world yet.";
+    if (this.helpers.length >= MAX_HELPERS) return `That's the whole team (${MAX_HELPERS} helpers max).`;
+    const base = this.mcBase.username;
+    let name = wanted;
+    for (let i = 1; !name; i++) if (!this.helpers.some((h) => h.name === `${base}${i}`)) name = `${base}${i}`;
+    const body = createMinecraftBody({
+      ...this.mcBase, username: name, prefixes: [name.toLowerCase(), `@${name.toLowerCase()}`, 'team', 'crafties'],
+      helper: true, followGap: 3 + 2 * (this.helpers.length + 1), team: this.team.names,
+    });
+    this.team.names.push(name); // before it spawns, so nobody mistakes it for a stranger
+    const brain = new Brain(body, this.llm, this.router, {
+      verbose: true, owner: this.setup!.playerName.trim(), name, helper: true, team: this.team,
+      onExit: (who) => this.removeHelper(who),
+    });
+    this.helpers.push({ name, body, brain });
+    this.saveHelpers();
+    this.log(`[craftie] ${name} joined the team`);
+    return quiet ? '' : `${name} is joining to help. Talk to it with "${name.toLowerCase()} ...".`;
+  }
+
+  /** "craftie exit": send helpers home. who = a name, "all", or null = the newest one. */
+  removeHelper(who: string | null): string {
+    if (!this.helpers.length) return 'No helpers to send home.';
+    const gone = who === 'all' ? [...this.helpers] : [who ? this.helpers.find((h) => h.name.toLowerCase() === who.toLowerCase()) : this.helpers.at(-1)].filter(Boolean) as typeof this.helpers;
+    if (!gone.length) return `No helper called ${who}.`;
+    for (const h of gone) {
+      h.brain.shutdown(); setTimeout(() => h.body.quit(), 1500); // let its goodbye go out
+      this.team.remove(h.name);
+      this.helpers = this.helpers.filter((x) => x !== h);
+    }
+    this.saveHelpers();
+    this.log(`[craftie] ${gone.map((h) => h.name).join(', ')} left`);
+    return gone.length > 1 ? 'Helpers sent home.' : `${gone[0].name} is heading home. Bye!`;
+  }
+
   command(text: string) {
     if (!this.brain || !this.setup) return;
     this.brain.command(this.setup.playerName, text);
   }
 
   async stop(keepStatus = false) {
+    for (const h of this.helpers) { h.brain.shutdown(); h.body.quit(); }
+    this.helpers = []; // the saved list stays, so they come back next start
     this.brain?.shutdown(); this.body?.quit();
     this.brain = null; this.body = null;
     if (!keepStatus) this.set({ state: 'idle', message: 'Stopped' });

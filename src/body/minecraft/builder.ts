@@ -388,7 +388,11 @@ export async function build(bot: any, a: BuildArgs, signal: AbortSignal): Promis
       const e0 = epoch(bot);
       const pos = bot.entity.position;
       const ready = pending.filter((c) => NB.some((n) => canBuildOn(bot.blockAt(at(c).plus(n)))));
-      if (!ready.length) break;
+      if (!ready.length) {
+        const c0 = pending[0], p0 = at(c0);
+        console.log(`[build] nothing left to place against: ${pending.length} blocks waiting, e.g. ${c0.block} at ${p0} (below: ${bot.blockAt(p0.offset(0, -1, 0))?.name ?? 'not loaded'}, me ${bot.entity.position.floored()})`);
+        break;
+      }
       // Speed: place everything in reach before walking anywhere. Within reach: lowest first,
       // structure before decoration, and the block already in hand before switching items.
       const eye = pos.offset(0, 1.6, 0), held = bot.heldItem?.name;

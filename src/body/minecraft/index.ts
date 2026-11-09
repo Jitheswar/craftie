@@ -60,6 +60,12 @@ export type MinecraftConfig = {
   chatPatterns?: string[];
   /** For cracked servers with login plugins (AuthMe, nLogin...): auto /register and /login. */
   password?: string;
+  /** Other Crafties on the team (live list): never fought, even if one hits us by accident. */
+  team?: string[];
+  /** How far behind the player to walk (helpers keep a bit further back so they don't crowd). */
+  followGap?: number;
+  /** A helper answers only to its own name (and "team"), not to "craftie"/"ai", and doesn't greet. */
+  helper?: boolean;
 };
 
 export function createMinecraftBody(cfg: MinecraftConfig): Body {
@@ -79,6 +85,9 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
   // The player Craftie belongs to (first owner). Friends may give orders, but only this player is never fought.
   const primary = (cfg.owners.find((o) => o !== '*') ?? '').toLowerCase();
   const isPrimary = (u?: string) => !!u && u.toLowerCase() === primary;
+  const isTeam = (u?: string) => !!u && (cfg.team ?? []).some((t) => t.toLowerCase() === u.toLowerCase());
+  const isFriendly = (u?: string) => isPrimary(u) || isTeam(u);
+  const gap = cfg.followGap ?? 3;
 
   function handleIncoming(from: string, msg: string, whisper: boolean) {
     if (!bot || from === bot.username || !isOwner(from)) return;
@@ -90,7 +99,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
     let text = msg.trim();
     if (!whisper) {
       // Accept any natural way of addressing the bot: "!ai", "ai", "!craftie", "Craftie,", "@Craftie" ...
-      const names = [...new Set(['ai', 'craftie', bot.username.toLowerCase(), ...cfg.prefixes.map((p) => p.replace(/^[!@]/, '').toLowerCase())])]
+      const names = [...new Set([...(cfg.helper ? [] : ['ai', 'craftie']), bot.username.toLowerCase(), ...cfg.prefixes.map((p) => p.replace(/^[!@]/, '').toLowerCase())])]
         .map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
       const m = text.match(new RegExp(`^[!@/.]?(${names.join('|')})(?![a-z0-9_])[\\s,:!]*`, 'i'));
       if (!m) return;
@@ -114,7 +123,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
 
   // Home + chest memory, saved per world (keyed by LAN world name or server address).
   let worldKey = '';
-  const memFile = () => join(homedir(), '.craftie', 'worlds', worldKey.replace(/[^\w.-]+/g, '_') + '.json');
+  const memFile = () => join(homedir(), '.craftie', 'worlds', worldKey.replace(/[^\w.-]+/g, '_') + (cfg.helper ? `.${cfg.username}` : '') + '.json');
   const loadMemory = () => {
     try {
       const m = JSON.parse(readFileSync(memFile(), 'utf8'));
@@ -193,7 +202,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
       bot.autoEat.setOpts({ minHunger: 15 });
       bot.autoEat.enableAuto();
       setTimeout(() => equipBest(bot).catch(() => {}), 2000);
-      outQueue.push(`Hi! I'm ${bot.username}. Type "${cfg.prefixes[0]} <anything>" in chat to give me a job, or "${cfg.prefixes[0]} stop".`);
+      if (!cfg.helper) outQueue.push(`Hi! I'm ${bot.username}. Type "${cfg.prefixes[0]} <anything>" in chat to give me a job, or "${cfg.prefixes[0]} stop".`);
       if (cfg.viewerPort) {
         try {
           const { mineflayer: viewer } = (await import('prismarine-viewer')).default as any;
@@ -400,7 +409,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
       const e = ownerEntity();
       if (!e) { stopSteer(); return; }
       const me = bot.entity.position, flat = Math.hypot(e.position.x - me.x, e.position.z - me.z);
-      if (flat < 3) {
+      if (flat < gap) {
         stopSteer();
         // Mostly look at you; now and then glance at something interesting nearby, like a person would.
         if (!glance || Date.now() > glance.until) {
@@ -452,7 +461,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
       const o = followTarget ? Object.values(bot.entities as Record<string, any>).find((x) => x.username === followTarget) : null;
       // Only while following you (jobs like building handle their own moves and limits; hovering to place blocks isn't "stuck").
       const jobGoal = bot.pathfinder?.goal && !(bot.pathfinder.goal instanceof (pf as any).goals.GoalFollow);
-      const wantsToMove = !!o && !flying && !jobGoal && o.position.distanceTo(bot.entity.position) > 5;
+      const wantsToMove = !!o && !flying && !jobGoal && o.position.distanceTo(bot.entity.position) > gap + 3; // standing at our follow distance isn't stuck
       const pos = bot.entity.position;
       if (!wantsToMove || !lastPos || pos.distanceTo(lastPos) > 0.6) { lastPos = pos.clone(); stillSince = Date.now(); return; }
       if (Date.now() - stillSince < 4000) return;
@@ -468,6 +477,13 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
     const unstick = async (toward: any): Promise<string> => {
       const me = bot.entity.position.floored();
       if (bot.vehicle) { bot.dismount(); return 'got out of the vehicle'; }
+      // Someone (a teammate, the player, a mob) standing in the way: step around them, never dig.
+      const blocker = Object.values(bot.entities as Record<string, any>).find((e) => e !== bot.entity && e.position.distanceTo(bot.entity.position) < 1.5);
+      if (blocker) {
+        bot.setControlState(Math.random() < 0.5 ? 'left' : 'right', true); bot.setControlState('jump', true);
+        await sleep(500); bot.setControlState('left', false); bot.setControlState('right', false); bot.setControlState('jump', false);
+        return `stepped around ${blocker.username ?? blocker.name}`;
+      }
       const around = [[1, 0], [-1, 0], [0, 1], [0, -1]];
       const solid = (v: any) => { const b = bot.blockAt(v); return !!b && b.boundingBox === 'block'; };
       const mine = (v: any) => ownerBuilt.has(`${v.x},${v.y},${v.z}`);
@@ -525,7 +541,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
         distance: o ? +o.position.distanceTo(bot.entity.position).toFixed(1) : null,
         flyNote, flyBusy, pathGoal: bot.pathfinder?.goal?.constructor?.name ?? null, moving: bot.pathfinder?.isMoving?.() ?? false, paused: !!bot.craftiePause,
       };
-      try { writeFileSync(join(homedir(), '.craftie', 'status.json'), JSON.stringify(st, null, 1)); } catch {}
+      try { writeFileSync(join(homedir(), '.craftie', cfg.helper ? `status-${bot.username}.json` : 'status.json'), JSON.stringify(st, null, 1)); } catch {}
     }, 3000);
 
     // Match the player's game mode (creative <-> survival) when cheats allow it.
@@ -574,7 +590,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
           return;
         }
         mode = 'path';
-        if (dist <= 4 && !needClimb) { if (isFollowGoal()) bot.pathfinder.setGoal(null); return; }
+        if (dist <= gap + 1 && !needClimb) { if (isFollowGoal()) bot.pathfinder.setGoal(null); return; }
         // Climbing toward where they *were*? They moved or came down: drop the old plan right away.
         if (isFollowGoal() && pathFrom && (e.position.distanceTo(pathFrom) > 4 || (above < 1 && bot.pathfinder.isBuilding?.()))) { bot.pathfinder.setGoal(null); pathFrom = null; }
         if (needClimb) {
@@ -591,7 +607,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
             return;
           }
         }
-        if (!isFollowGoal()) { bot.pathfinder.setGoal(new (pf as any).goals.GoalFollow(e, 3), true); pathFrom = e.position.clone(); }
+        if (!isFollowGoal()) { bot.pathfinder.setGoal(new (pf as any).goals.GoalFollow(e, gap), true); pathFrom = e.position.clone(); }
         return;
       }
       // Out of sight (far away, e.g. after one of us respawned): teleport if allowed, else walk to where we last saw them.
@@ -616,9 +632,9 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
         if (Date.now() - lastGuard < 1000) return;
         let attacker = source && source !== e && source !== bot.entity ? source : null;
         attacker ??= Object.values(bot.entities as Record<string, any>)
-          .filter((x) => x !== bot.entity && x !== e && (x.type === 'hostile' || (x.type === 'player' && !isPrimary(x.username))) && x.position.distanceTo(e.position) < 5)
+          .filter((x) => x !== bot.entity && x !== e && (x.type === 'hostile' || (x.type === 'player' && !isFriendly(x.username))) && x.position.distanceTo(e.position) < 5)
           .sort((a, b) => a.position.distanceTo(e.position) - b.position.distanceTo(e.position))[0];
-        if (!attacker || (attacker.type === 'player' && isPrimary(attacker.username)) || attacker.type === 'projectile') return;
+        if (!attacker || (attacker.type === 'player' && isFriendly(attacker.username)) || attacker.type === 'projectile') return;
         if (attacker.position.distanceTo(bot.entity.position) > 32) return; // too far to help
         lastGuard = Date.now();
         dangerCbs.forEach((cb) => cb({ attacker: attacker.username ?? attacker.name, distance: attacker.position.distanceTo(bot.entity.position), health: bot.health, isPlayer: attacker.type === 'player', protecting: e.username }));
@@ -630,10 +646,10 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
       let attacker = source && source !== bot.entity ? source : null;
       if (attacker?.type === 'projectile' || attacker?.name === 'arrow') attacker = null;
       attacker ??= Object.values(bot.entities as Record<string, any>)
-        .filter((x) => x !== bot.entity && (x.type === 'hostile' || (x.type === 'player' && !isPrimary(x.username))) && x.position.distanceTo(me) < 6)
+        .filter((x) => x !== bot.entity && (x.type === 'hostile' || (x.type === 'player' && !isFriendly(x.username))) && x.position.distanceTo(me) < 6)
         .sort((a, b) => a.position.distanceTo(me) - b.position.distanceTo(me))[0];
       if (!attacker) return;
-      if (attacker.type === 'player' && isPrimary(attacker.username)) return; // never fight back against you
+      if (attacker.type === 'player' && isFriendly(attacker.username)) return; // never fight back against you (or a teammate)
       lastHurt = Date.now();
       dangerCbs.forEach((cb) => cb({ attacker: attacker.username ?? attacker.name, distance: attacker.position.distanceTo(me), health: bot.health, isPlayer: attacker.type === 'player' }));
     });

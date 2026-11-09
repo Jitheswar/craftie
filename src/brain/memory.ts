@@ -146,6 +146,13 @@ export class Memory {
   updateStep(id: number, status: 'todo' | 'done' | 'failed', note = '') {
     this.db.prepare('UPDATE project_steps SET status = ?, tries = tries + (CASE WHEN ? = \'todo\' THEN 1 ELSE 0 END), note = ? WHERE id = ?').run(status, status, note.slice(0, 160), id);
   }
+  /** Take a step for one Crafty, so teammates never do the same step twice. True if we got it. */
+  claimStep(id: number, who: string): boolean {
+    return Number(this.db.prepare("UPDATE project_steps SET status = 'doing', note = ? WHERE id = ? AND status = 'todo'").run(`taken by ${who}`, id).changes) === 1;
+  }
+  /** After a restart nobody is working on anything: steps left "doing" go back to the list. */
+  releaseStep(id: number) { this.db.prepare("UPDATE project_steps SET status = 'todo' WHERE id = ? AND status = 'doing'").run(id); }
+  releaseSteps() { this.db.prepare("UPDATE project_steps SET status = 'todo' WHERE status = 'doing'").run(); }
   projectLine(): string {
     const p = this.activeProject();
     if (!p) return '';
