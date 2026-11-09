@@ -2,7 +2,7 @@
 // Mine it, smelt it, or craft it from ingredients (recursively), and get the
 // right pickaxe first when a block needs one. Everything already in the
 // inventory is used before gathering more. No AI calls: this is plain code.
-import { cancellable, chests, count, epoch, findOrPlace, gotoPos, invLock, pauseGate, rememberChest, skills } from './skills.ts';
+import { cancellable, chests, count, epoch, findOrPlace, gotoPos, invLock, pauseGate, rememberChest, skills, sleep } from './skills.ts';
 import pf from 'mineflayer-pathfinder';
 const { goals } = pf as any;
 
@@ -78,11 +78,11 @@ function cost(bot: any, name: string, need: number): number {
 }
 
 /** Walk over dropped items of this kind nearby (e.g. logs that fell out of a tall tree). */
-async function pickUpDrops(bot: any, item: string, signal: AbortSignal) {
+async function pickUpDrops(bot: any, item: string, signal: AbortSignal, max = 4) {
   const me = bot.entity.position;
   const drops = Object.values(bot.entities as Record<string, any>)
     .filter((e) => e.name === 'item' && e.position.distanceTo(me) < 12 && e.getDroppedItem?.()?.name === item)
-    .sort((a, b) => a.position.distanceTo(me) - b.position.distanceTo(me)).slice(0, 4);
+    .sort((a, b) => a.position.distanceTo(me) - b.position.distanceTo(me)).slice(0, max);
   for (const d of drops) {
     const p = d.position;
     const go = bot.pathfinder.goto(new (await import('mineflayer-pathfinder')).default.goals.GoalNear(p.x, p.y, p.z, 0.5));
@@ -201,7 +201,8 @@ async function gather(bot: any, item: string, want: number, p: Plan): Promise<vo
       const n = bot.blockAt(pos.offset(x, y, z)); return n && (n.name === 'air' || n.name === 'cave_air');
     });
     const now = Date.now();
-    const near = bot.findBlocks({ matching: ids, maxDistance: p.radius ?? 40, count: 300 }).filter((v: any) => (bad.get(keyOf(v)) ?? 0) < now);
+    const theirs = (v: any) => bot.craftieOwnerBuilt?.has(`${v.x},${v.y},${v.z}`); // never take the player's own blocks
+    const near = bot.findBlocks({ matching: ids, maxDistance: p.radius ?? 40, count: 300 }).filter((v: any) => (bad.get(keyOf(v)) ?? 0) < now && !theirs(v));
     // Prefer blocks touching air, low down (no climbing), nearest first.
     const score = (v: any) => v.distanceTo(me) + Math.max(0, v.y - me.y - 1) * 4;
     const pick = near.filter(exposed).sort((x: any, y: any) => score(x) - score(y));
@@ -230,6 +231,18 @@ async function gather(bot: any, item: string, want: number, p: Plan): Promise<vo
       }
       try { await cancellable(bot, p.signal, Promise.race([bot.collectBlock.collect(bot.blockAt(target) ?? block, { ignoreNoPath: false }), limit])); }
       finally { clearTimeout(timer); }
+      // Trees: fell the rest of the trunk from right here (no walking per log), then pick it all up at once.
+      if (/_log$/.test(item) && count(bot, item) < want) {
+        let felled = 0;
+        for (let k = 0; k < 10 && count(bot, item) + felled < want; k++) {
+          const next = bot.findBlocks({ matching: ids, maxDistance: 6, count: 30 }).map((v: any) => bot.blockAt(v))
+            .filter((b: any) => b && !theirs(b.position) && bot.canDigBlock(b)).sort((a: any, b: any) => a.position.y - b.position.y)[0];
+          if (!next) break;
+          try { await bot.tool?.equipForBlock?.(next); await cancellable(bot, p.signal, bot.dig(next)); felled++; }
+          catch (e: any) { if (p.signal.aborted) throw e; break; }
+        }
+        if (felled) { await sleep(400); await pickUpDrops(bot, item, p.signal, 12); }
+      }
       if (count(bot, item) === before) await pickUpDrops(bot, item, p.signal);
     } catch (e: any) {
       if (p.signal.aborted) throw e;

@@ -175,6 +175,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
 
     if (!worldKey) worldKey = `${host}_${port}`;
     bot.on('craftieMemoryChanged', saveMemory);
+    bot.craftieOwnerBuilt = ownerBuilt; // gathering skips the player's own blocks too
     bot.once('spawn', async () => {
       loadMemory();
       console.log(`[mc] spawned as ${bot.username} on ${host}:${port} (MC ${bot.version})`);
