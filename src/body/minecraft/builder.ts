@@ -278,11 +278,12 @@ export async function build(bot: any, a: BuildArgs, signal: AbortSignal): Promis
   // Speed: chop all the wood for every wooden part in one trip, instead of a trip per material.
   if (bot.game.gameMode !== 'creative') {
     const w = wood(bot);
+    // Logs for everything wooden: log cells themselves plus what planks/stairs/doors still need.
     let logs = 0;
-    for (const [item, n] of missing()) logs += /_log$/.test(item) ? Math.max(0, n - count(bot, item)) : logsFor(bot, item, n - count(bot, item));
-    if (logs > 0) {
-      const want = count(bot, `${w}_log`) + Math.ceil(logs * 1.1);
-      console.log(`[build] chopping ${Math.ceil(logs * 1.1)} ${w}_log in one go for all the wooden parts`);
+    for (const [item, n] of missing()) logs += item === `${w}_log` ? n : /_log$/.test(item) ? 0 : logsFor(bot, item, n - count(bot, item));
+    const want = Math.ceil(logs * 1.1), have = count(bot, `${w}_log`);
+    if (want > have) {
+      console.log(`[build] chopping ${want - have} ${w}_log in one go for all the wooden parts (have ${have})`);
       try { await obtain(bot, `${w}_log`, want, plan); } catch (e: any) { if (signal.aborted) throw e; }
     }
   }

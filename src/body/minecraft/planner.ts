@@ -3,6 +3,8 @@
 // right pickaxe first when a block needs one. Everything already in the
 // inventory is used before gathering more. No AI calls: this is plain code.
 import { cancellable, chests, count, epoch, findOrPlace, gotoPos, invLock, pauseGate, rememberChest, skills } from './skills.ts';
+import pf from 'mineflayer-pathfinder';
+const { goals } = pf as any;
 
 // Items that come from mining a different block (item <- blocks that drop it).
 const DROPS: Record<string, string[]> = {
@@ -221,7 +223,12 @@ async function gather(bot: any, item: string, want: number, p: Plan): Promise<vo
       let timer: any;
       const limit = new Promise((_, rej) => { timer = setTimeout(() => { bot.collectBlock.cancelTask?.().catch?.(() => {}); bot.pathfinder.stop(); rej(new Error('took too long')); }, 45_000); });
       const before = count(bot, item);
-      try { await cancellable(bot, p.signal, Promise.race([bot.collectBlock.collect(block, { ignoreNoPath: false }), limit])); }
+      // Buried block: the mining helper needs to *see* it, which it can't until something is dug.
+      // So dig down next to it first, like a player would, then mine it.
+      if (!exposed(target)) {
+        await cancellable(bot, p.signal, Promise.race([bot.pathfinder.goto(new goals.GoalNear(target.x, target.y + 1, target.z, 1)), limit])).catch((e: any) => { if (p.signal.aborted) throw e; });
+      }
+      try { await cancellable(bot, p.signal, Promise.race([bot.collectBlock.collect(bot.blockAt(target) ?? block, { ignoreNoPath: false }), limit])); }
       finally { clearTimeout(timer); }
       if (count(bot, item) === before) await pickUpDrops(bot, item, p.signal);
     } catch (e: any) {

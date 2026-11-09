@@ -21,6 +21,11 @@ const HOSTILE_NEAR_PLAYER: Record<string, string> = {
   spider: 'Spider coming for you!', witch: 'Witch nearby, careful!', phantom: 'Phantom overhead!',
   enderman: 'Enderman close by, don\'t look at it!', pillager: 'Pillager! Careful.', vindicator: 'Vindicator coming!',
   warden: 'Warden nearby! Quiet and back off!', blaze: 'Blaze nearby!', ghast: 'Ghast!',
+  zombie: 'Zombie coming!', husk: 'Husk coming!', drowned: 'Drowned!', zombie_villager: 'Zombie villager!',
+  cave_spider: 'Cave spider!', slime: 'Slime!', magma_cube: 'Magma cube!', silverfish: 'Silverfish!',
+  wither_skeleton: 'Wither skeleton!', piglin_brute: 'Piglin brute!', hoglin: 'Hoglin!', zoglin: 'Zoglin!',
+  evoker: 'Evoker!', ravager: 'Ravager!', vex: 'Vex!', bogged: 'Skeleton aiming at you!', breeze: 'Breeze!',
+  guardian: 'Guardian!', endermite: 'Endermite!',
 };
 const NICE_MOBS: Record<string, string> = {
   horse: 'A horse over there, want to tame it?', cat: 'Aww, a cat nearby.', wolf: 'A wolf! Bones would tame it.',
