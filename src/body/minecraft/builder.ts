@@ -13,6 +13,7 @@ import { cancellable, count, epoch, findItem, flyRoute as flyOver, flyTo, pauseG
 const { goals, Movements } = pf as any;
 
 type Facing = 'north' | 'south' | 'east' | 'west';
+import { loadSchematic } from './schematics.ts';
 export type Cell = { x: number; y: number; z: number; block: string; facing?: Facing; half?: 'top' | 'bottom' };
 export type BuildArgs = {
   blueprint?: 'house' | 'cottage' | 'hut' | 'tower' | 'wall' | 'platform' | 'custom';
@@ -22,6 +23,8 @@ export type BuildArgs = {
   furnish?: boolean; lights?: boolean;
   /** custom: layers[y][z] = row string, one char per x. Legend char -> block, e.g. "oak_stairs[facing=east]". "_" = must be air, "." = don't care. */
   layers?: string[][]; legend?: Record<string, string>;
+  /** Build a schematic file (.schem / .litematic) from ~/.craftie/schematics by name. */
+  schematic?: string;
   x?: number; y?: number; z?: number;
   /** Build on the flattest free spot near this point (used by projects to lay out several builds). */
   near?: { x: number; z: number };
@@ -231,7 +234,12 @@ async function timed<T>(name: string, f: () => Promise<T>): Promise<T> {
 
 export async function build(bot: any, a: BuildArgs, signal: AbortSignal): Promise<string> {
   for (const k of Object.keys(prof)) delete prof[k];
-  let { cells, d, doorZ } = design(bot, a);
+  let cells: Cell[], d: number, doorZ: number | undefined;
+  if (a.schematic) {
+    const s = await loadSchematic(a.schematic).catch((e) => e as Error);
+    if (s instanceof Error) return s.message;
+    cells = s.cells; d = Math.max(...cells.map((c) => c.z)) + 1;
+  } else ({ cells, d, doorZ } = design(bot, a));
   if (!cells.length) return 'empty design';
   const me = bot.entity.position.floored();
   const W = Math.max(...cells.map((c) => c.x)) + 1, H = Math.max(...cells.map((c) => c.y)) + 1;
@@ -297,8 +305,12 @@ export async function build(bot: any, a: BuildArgs, signal: AbortSignal): Promis
   const wanted = new Map(cells.map((c) => [key(at(c)), c.block]));
   const scaffolds = new Map<string, Vec3>();
   // Any dirt/cobblestone that shows up where the design wants something else (or nothing) is scaffolding.
+  // Only near the site: dirt/cobble appearing elsewhere (other builds, lava meeting water) isn't ours.
+  const xs = cells.map((c) => origin.x + c.x), ys = cells.map((c) => origin.y + c.y), zs = cells.map((c) => origin.z + c.z);
+  const box = { x0: Math.min(...xs) - 4, x1: Math.max(...xs) + 4, y0: Math.min(...ys) - 2, y1: Math.max(...ys) + 4, z0: Math.min(...zs) - 4, z1: Math.max(...zs) + 4 };
+  const nearSite = (p: Vec3) => p.x >= box.x0 && p.x <= box.x1 && p.y >= box.y0 && p.y <= box.y1 && p.z >= box.z0 && p.z <= box.z1;
   const onUpdate = (_old: any, nb: any) => {
-    if (nb && SCAFFOLD.includes(nb.name) && wanted.get(key(nb.position)) !== nb.name) scaffolds.set(key(nb.position), nb.position.clone());
+    if (nb && SCAFFOLD.includes(nb.name) && nearSite(nb.position) && wanted.get(key(nb.position)) !== nb.name) scaffolds.set(key(nb.position), nb.position.clone());
   };
   bot.on('blockUpdate', onUpdate);
 
@@ -337,7 +349,7 @@ export async function build(bot: any, a: BuildArgs, signal: AbortSignal): Promis
     // (Building walks: flying straight lines kept getting blocked by terrain and trees around the site.)
     let timer: any;
     const limit = new Promise<void>((res) => { timer = setTimeout(() => { bot.pathfinder.stop(); res(); }, ms); });
-    try { await timed('walk', () => cancellable(bot, signal, Promise.race([bot.pathfinder.goto(goal), limit])).catch((e: any) => { if (signal.aborted) throw e; })); }
+    try { await timed('walk', () => cancellable(bot, signal, Promise.race([bot.pathfinder.goto(goal), limit])).catch((e: any) => { if (signal.aborted) throw e; if (process.env.CRAFTIE_DEBUG) console.log('[build] walk failed:', e.message, 'goal', JSON.stringify(goal), 'me', bot.entity.position.floored().toString()); })); }
     finally { clearTimeout(timer); }
     await pauseGate(bot);
   };
@@ -485,7 +497,11 @@ export async function build(bot: any, a: BuildArgs, signal: AbortSignal): Promis
     }
     prof['phase:cleanup+refill'] = { ms: Date.now() - tClean, n: 1 };
     if (bot.game.gameMode === 'creative') { try { bot.creative.stopFlying(); } catch {} }
-    await go(new goals.GoalNear(origin.x - 3, origin.y, origin.z + (doorZ ?? 0), 1), 40_000);
+    // Stand outside each door: the player places a door looking in, so "outside" is behind its facing.
+    const DIR: Record<string, [number, number]> = { east: [1, 0], west: [-1, 0], south: [0, 1], north: [0, -1] };
+    const outside = (c: Cell, k: number) => { const [dx, dz] = DIR[c.facing ?? 'east']; return at(c).offset(-dx * k, 0, -dz * k); };
+    if (process.env.CRAFTIE_DEBUG) console.log('[build] door phase starts, me', bot.entity.position.floored().toString(), 'origin', origin.toString());
+    if (doors.length) { const o = outside(doors[0], 3); await go(new goals.GoalNearXZ(o.x, o.z, 1), 40_000); }
     for (const c of doors) {
       const p = at(c);
       if (bot.blockAt(p)?.name === c.block) continue;
@@ -498,8 +514,14 @@ export async function build(bot: any, a: BuildArgs, signal: AbortSignal): Promis
       const below = bot.blockAt(p.offset(0, -1, 0));
       if (!item || !canBuildOn(below)) continue;
       try {
-        if (bot.entity.position.offset(0, 1.6, 0).distanceTo(p.offset(0.5, 0.5, 0.5)) > 4.3) await go(new goals.GoalNear(p.x - 2, p.y, p.z, 0.5));
+        if (bot.entity.position.offset(0, 1.6, 0).distanceTo(p.offset(0.5, 0.5, 0.5)) > 4.3) {
+          // Outside the door, at whatever height the ground is; failing that, anywhere within reach.
+          const reach = () => bot.entity.position.offset(0, 1.6, 0).distanceTo(p.offset(0.5, 0.5, 0.5)) <= 4.3;
+          const o = outside(c, 2); await go(new goals.GoalNearXZ(o.x, o.z, 1));
+          if (!reach()) await go(new goals.GoalNear(p.x, p.y, p.z, 3));
+        }
         await bot.equip(item, 'hand');
+        if (process.env.CRAFTIE_DEBUG) console.log(`[build] door at ${p} facing ${c.facing}; me ${bot.entity.position.floored()} below=${below?.name} here=${bot.blockAt(p)?.name} above=${bot.blockAt(p.offset(0, 1, 0))?.name}`);
         await placeFacing(bot, { n: new Vec3(0, -1, 0), b: below }, c, p);
         placed++;
       } catch (e: any) { if (process.env.CRAFTIE_DEBUG) console.log('[build] door failed:', e.message); }
@@ -511,7 +533,7 @@ export async function build(bot: any, a: BuildArgs, signal: AbortSignal): Promis
       console.log(`[build] stairs standing at the end: ${st.filter((c) => bot.blockAt(at(c))?.name === c.block).length}/${st.length}; e.g. ${st.slice(0, 3).map((c) => `${at(c)}=${bot.blockAt(at(c))?.name}`).join(' ')}`);
     }
     const left = pending.length;
-    return `built ${a.blueprint ?? 'house'} at ${origin.x},${origin.y},${origin.z}: ${placed} blocks placed${left ? `, ${left} couldn't be placed` : ''}${removed ? `, ${removed} scaffold blocks removed` : ''}`;
+    return `built ${a.schematic ? `schematic "${a.schematic}"` : a.blueprint ?? 'house'} at ${origin.x},${origin.y},${origin.z}: ${placed} blocks placed${left ? `, ${left} couldn't be placed` : ''}${removed ? `, ${removed} scaffold blocks removed` : ''}`;
   } finally {
     bot.removeListener('blockUpdate', onUpdate);
     bot.pathfinder.setMovements(oldMoves);

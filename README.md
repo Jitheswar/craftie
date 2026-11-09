@@ -12,6 +12,8 @@ When you don't need it, it doesn't just stand around. It follows you, watches yo
 
 **Do jobs for you**
 - *"build me a house"*: gathers every material and builds a proper cottage: stone base, log pillars, glass windows, pitched stair roof, door, torches, crafting table, furnace and chest.
+- *"build my castle schematic"*: builds any WorldEdit (`.schem`) or Litematica (`.litematic`) file you drop into `~/.craftie/schematics/`. Ask for it by file name.
+- *"build me a bridge"*, *"make a wheat farm"*: for things with no preset, the AI designs the build itself, layer by layer.
 - *"get 20 iron"*, *"make me an iron pickaxe"*: figures out the whole chain (which tool it needs first, where to mine, what to smelt) and does it.
 - Simple orders like *"come here"*, *"follow me"* or *"kill that zombie"* happen instantly.
 
@@ -60,6 +62,7 @@ Start a chat message with its name: `craftie …`, `!craftie …`, `@craftie …
 | Say | What happens |
 |---|---|
 | `craftie, build me a house` | gathers everything and builds it |
+| `craftie build the tower schematic` | builds `~/.craftie/schematics/tower.schem` (or `.litematic`) |
 | `craftie get 20 iron` | makes the tools it needs, mines, smelts |
 | `craftie come here` / `follow me` / `stay` | instant |
 | `craftie give me my stuff back` | returns the items it saved when you died |
@@ -151,7 +154,6 @@ Craftie is young and being built actively.
 - testing the Auto LAN mod on 1.21+ in a real game.
 
 **Planned:**
-- building from schematic files,
 - several Crafties working together.
 
 **Not supported yet:**

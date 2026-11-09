@@ -20,6 +20,7 @@ skills.build = {
   doc: 'build {blueprint, width?, depth?, height?, walls?, pillars?, base?, roof?, windows?, furnish?, lights?} - build a quality structure and gather ALL materials automatically. ' +
     'blueprint: house (cottage: stone base, log pillars, plank walls, glass windows, pitched stair roof, door, torches, crafting table/furnace/chest) | hut (small) | tower | wall | platform | custom. ' +
     'Palette values are block ids or "planks"/"log"/"stairs" (= local wood). ' +
+    'schematic: "name" builds a .schem/.litematic file from ~/.craftie/schematics (use it when the player names a schematic; a bad name returns the list). ' +
     'custom: {layers: [[row strings per z] per y, bottom first], legend: {char: "block_id" or "oak_stairs[facing=east,half=bottom]"}}, "_" = keep clear, "." = ignore',
   async run(bot, a, signal) { return build(bot, a, signal); },
 };
