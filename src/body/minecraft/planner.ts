@@ -203,10 +203,10 @@ async function gather(bot: any, item: string, want: number, p: Plan): Promise<vo
     const now = Date.now();
     const theirs = (v: any) => bot.craftieOwnerBuilt?.has(`${v.x},${v.y},${v.z}`); // never take the player's own blocks
     const near = bot.findBlocks({ matching: ids, maxDistance: p.radius ?? 40, count: 300 }).filter((v: any) => (bad.get(keyOf(v)) ?? 0) < now && !theirs(v));
-    // Prefer blocks touching air, low down (no climbing), nearest first.
-    const score = (v: any) => v.distanceTo(me) + Math.max(0, v.y - me.y - 1) * 4;
-    const pick = near.filter(exposed).sort((x: any, y: any) => score(x) - score(y));
-    const target = (pick.length ? pick : near)[0];
+    // Nearest first; no climbing; and don't go deep: a cave wall 25 blocks down is where Craftie gets killed,
+    // while stone a few blocks under the grass is a short safe dig. Blocks already touching air save a little digging.
+    const score = (v: any) => v.distanceTo(me) + Math.max(0, v.y - me.y - 1) * 4 + Math.max(0, me.y - v.y - 4) * 3 - (exposed(v) ? 3 : 0);
+    const target = [...near].sort((x: any, y: any) => score(x) - score(y))[0];
     if (!target || misses > 8) {
       if (p.radius) throw new Error(`couldn't find any reachable ${sources.join('/')} close by`);
       if (++explores > 4) throw new Error(`couldn't find any reachable ${sources.join('/')} nearby after exploring`);

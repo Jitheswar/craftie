@@ -158,8 +158,7 @@ Craftie is young and being built actively.
 - long-running projects (*"build a village"* is split into steps and carried on across sessions; `craftie project status` / `pause` / `resume` / `cancel`).
 
 **Still being polished:**
-- big survival builds from scratch,
-- build speed (a cottage takes about 4 minutes in survival),
+- survival builds from scratch: Craftie gathers everything itself (about 50 logs and 36 stone for a small hut), which takes 20+ minutes from an empty inventory; with materials in its chests a hut takes a few minutes,
 - testing the Auto LAN mod on 1.21+ in a real game.
 
 **Not supported yet:**
