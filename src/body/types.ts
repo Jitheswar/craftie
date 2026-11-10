@@ -18,6 +18,8 @@ export interface Body {
   interrupt(fn: (signal: AbortSignal) => Promise<unknown>): Promise<void>;
   /** Number of interrupts so far; tells the brain an action failed only because it was paused. */
   interruptCount(): number;
+  /** Where the body can ask what job is running, for the status file the game mod's HUD shows. */
+  setJobSource(fn: () => string | null): void;
   waitIfPaused(): Promise<void>;
   /** Disconnect for good. */
   quit(): void;

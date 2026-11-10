@@ -37,6 +37,12 @@
   .opt b { display: block; font-weight: 600; }
   .opt small { color: var(--muted); }
   .badge { font-size: 12px; padding: 1px 8px; border-radius: 99px; background: var(--soft); color: var(--accent); margin-left: 6px; font-weight: 600; }
+  .inst { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+  .inst > div { flex: 1; min-width: 0; }
+  .inst b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .inst small { color: var(--muted); }
+  .inst button { flex: none; padding: 7px 14px; border-radius: 9px; border: 0; background: var(--accent); color: var(--accent-ink); font: 600 14px system-ui; cursor: pointer; }
+  .inst button:disabled { background: var(--chip); color: var(--muted); cursor: default; }
   .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
   .tab { padding: 8px 14px; border-radius: 99px; border: 1px solid var(--line); background: none; color: var(--ink); font: inherit; cursor: pointer; }
   .tab.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
@@ -114,7 +120,7 @@
       <div data-panel="lan">
         <ol class="hint" style="padding-left:18px;margin:4px 0 0">
           <li>Open your world in Minecraft.</li>
-          <li>Press <b>Esc → Open to LAN</b>. With the Custom LAN mod, set <b>Online Mode: Off</b> (needed for offline accounts).</li>
+          <li>Press <b>Esc → Open to LAN</b>. With the Custom LAN mod, set <b>Online Mode: Off</b> (needed for offline accounts). The Craftie mod (step 4) does this step and the next one for you.</li>
           <li>Click <b>Start LAN World</b>. Craftie finds it and joins by itself.</li>
         </ol>
       </div>
@@ -128,6 +134,12 @@
 
       <p class="hint">Only you can give Craftie orders. Anyone else's messages are ignored.</p>
 
+    </section>
+
+    <section class="card">
+      <h2><span class="num">4</span>Add the Craftie mod to your game (optional)</h2>
+      <p class="hint" style="margin:0 0 10px">Opens your worlds to LAN by itself, so Craftie joins with no clicks. On Minecraft 26 and newer it also shows what Craftie is doing on screen, adds an order key (G) and <b>/craftie</b>, and gives Craftie its skin. Only you need it; friends install nothing.</p>
+      <div class="opts" id="instances"><p class="hint">Looking for your Minecraft instances…</p></div>
     </section>
 
     <label class="check" style="margin:0 4px 12px"><input type="checkbox" id="autostart" checked> Start Craftie when I log in, so it's ready in every world (recommended)</label>
@@ -205,6 +217,34 @@ async function load() {
 }
 
 
+// Step 4: every Minecraft instance found on this PC, with a button to put the Craftie mod in it.
+async function loadInstances() {
+  const box = $('instances');
+  const { instances = [] } = await (await api('/api/instances')).json().catch(() => ({}));
+  box.textContent = '';
+  if (!instances.length) {
+    const p = document.createElement('p'); p.className = 'hint';
+    p.textContent = 'No Minecraft instances found. You can still copy the mod yourself from the mods/builds folder into your game\'s mods folder.';
+    return void box.appendChild(p);
+  }
+  for (const i of instances) {
+    const row = document.createElement('div'); row.className = 'inst';
+    const info = document.createElement('div'), name = document.createElement('b'), sub = document.createElement('small'), btn = document.createElement('button');
+    name.textContent = i.name;
+    sub.textContent = `Minecraft ${i.version} · ${i.launcher}` + (i.blocked ? ` · ${i.blocked}` : i.mod === 'old' ? ' · older Craftie mod installed' : '');
+    btn.type = 'button';
+    btn.textContent = i.blocked ? 'Not available' : i.mod === 'current' ? 'Installed ✓' : i.mod === 'old' ? 'Update' : 'Install';
+    btn.disabled = !!i.blocked || i.mod === 'current';
+    btn.addEventListener('click', async () => {
+      btn.disabled = true; btn.textContent = 'Installing…';
+      const r = await (await api('/api/install-mod', { method: 'POST', body: JSON.stringify({ id: i.id }) })).json().catch(() => ({ message: 'Could not reach Craftie.' }));
+      toast(r.message);
+      loadInstances();
+    });
+    info.append(name, sub); row.append(info, btn); box.appendChild(row);
+  }
+}
+
 function collect() {
   const id = document.querySelector('input[name=ai]:checked')?.value;
   return {
@@ -232,7 +272,7 @@ $('setup').addEventListener('submit', async (e) => {
 function toast(msg) {
   const t = $('toast');
   t.textContent = msg; t.style.opacity = '1';
-  clearTimeout(t._h); t._h = setTimeout(() => (t.style.opacity = '0'), 3500);
+  clearTimeout(t._h); t._h = setTimeout(() => (t.style.opacity = '0'), 3500 + msg.length * 40);
 }
 $('stop').addEventListener('click', async () => { $('stop').disabled = true; await api('/api/stop', { method: 'POST' }); $('stop').disabled = false; });
 
@@ -291,6 +331,7 @@ const es = new EventSource('/api/events?t=' + encodeURIComponent(TOKEN));
 es.addEventListener('status', (e) => showStatus(JSON.parse(e.data)));
 es.addEventListener('log', (e) => addLine(JSON.parse(e.data)));
 load();
+loadInstances();
 </script>
 </body>
 </html>

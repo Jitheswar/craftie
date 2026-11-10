@@ -6,7 +6,11 @@ import armorManager from 'mineflayer-armor-manager';
 import { loader as autoEat } from 'mineflayer-auto-eat';
 import type { Body, Danger, Death } from '../types.ts';
 import { discoverLan } from './lan.ts';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { viaProxy } from './viaproxy.ts';
+import mcProtocol from 'minecraft-protocol';
+import mcData from 'minecraft-data';
+import { createRequire } from 'node:module';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Vec3 } from 'vec3';
@@ -143,6 +147,37 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
     }, 2000);
   };
 
+  // Newer Minecraft than we understand (e.g. 26.3 while we support up to 26.1)? Join as the newest
+  // version we know; ViaProxy (viaproxy.ts) translates. Unset = let mineflayer detect.
+  // Real clients end every tick with a tick_end packet (1.21.2+); mineflayer doesn't. Newer servers
+  // (26.3) kick a player who sends two positions without one in between: "invalid player movement".
+  function tickEnds(b: any) {
+    let moved = false, ready = false;
+    const write = b._client.write.bind(b._client);
+    b._client.write = (name: string, params: any) => {
+      if (ready && (name === 'position' || name === 'position_look')) { if (moved) write('tick_end', {}); moved = true; }
+      return write(name, params);
+    };
+    b.once('login', () => { ready = !!b.registry?.protocol?.play?.toServer?.types?.packet_tick_end; });
+    b.on('physicsTick', () => { if (ready) { write('tick_end', {}); moved = false; } });
+  }
+
+  async function pickVersion(host: string, port: number): Promise<string | undefined> {
+    try {
+      const r: any = await (mcProtocol as any).ping({ host, port, closeTimeout: 3000 });
+      const name: string = r?.version?.name ?? '';
+      if (!name || (mcData as any)(name)) return undefined;
+      const latest: string = createRequire(import.meta.url)('mineflayer/lib/version').latestSupportedVersion;
+      console.log(`[mc] world is ${name}, newer than I support; joining as ${latest} through ViaProxy`);
+      return latest;
+    } catch { return undefined; }
+  }
+
+  // Status file the game mod's HUD reads: fresh while we're in a world, gone when we're not.
+  let online = false;
+  let jobSource: (() => string | null) | null = null;
+  const statusFile = () => join(homedir(), '.craftie', cfg.helper ? `status-${cfg.username}.json` : 'status.json');
+
   async function connect() {
     let host = cfg.host, port = cfg.port ?? 25565;
     if (stopped) return;
@@ -157,11 +192,17 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
         return void (!stopped && setTimeout(connect, 5000));
       }
     }
+    const version = cfg.version || await pickVersion(host!, port);
+    if (version && !cfg.version) {
+      try { ({ host, port } = await viaProxy(host!, port)); }
+      catch (e: any) { console.log(`[mc] can't join this newer Minecraft version: ${e.message}`); return void (!stopped && setTimeout(connect, 30000)); }
+    }
     bot = mineflayer.createBot({
       host, port, username: cfg.username,
-      auth: cfg.auth ?? 'offline', version: cfg.version || undefined,
+      auth: cfg.auth ?? 'offline', version,
     } as any);
     if (process.env.CRAFTIE_DEBUG) (globalThis as any).__craftieBot = bot; // tests read air/position directly
+    tickEnds(bot);
     bot.loadPlugin(pathfinder);
     bot.loadPlugin(collectBlock.plugin);
     bot.loadPlugin(pvp.plugin);
@@ -177,6 +218,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
     bot.on('craftieMemoryChanged', saveMemory);
     bot.craftieOwnerBuilt = ownerBuilt; // gathering skips the player's own blocks too
     bot.once('spawn', async () => {
+      online = true;
       loadMemory();
       console.log(`[mc] spawned as ${bot.username} on ${host}:${port} (MC ${bot.version})`);
       const moves = new Movements(bot);
@@ -532,18 +574,20 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
     };
 
     // Diagnostics: a small status file, so "where is it / what is it doing" can be answered from outside.
-    setInterval(() => {
-      if (!bot.entity) return;
+    const me = bot; // this connection's bot: a later reconnect makes a new one
+    const statusTimer = setInterval(() => {
+      if (me !== bot || stopped) return void clearInterval(statusTimer);
+      if (!bot.entity || !online) return;
       const o = followTarget ? Object.values(bot.entities as Record<string, any>).find((x) => x.username === followTarget) : null;
       const st = {
-        at: new Date().toISOString(), pos: bot.entity.position.floored(), mode: bot.game.gameMode, health: bot.health, food: bot.food,
+        at: new Date().toISOString(), name: bot.username, job: jobSource?.() ?? null, dim: bot.game.dimension, pos: bot.entity.position.floored(), mode: bot.game.gameMode, health: bot.health, food: bot.food,
         following: followTarget, followMode: mode, flying, gettingBlocks, playerVisible: !!o,
         playerPos: o?.position.floored() ?? lastSeen.get(followTarget ?? '') ?? null,
         distance: o ? +o.position.distanceTo(bot.entity.position).toFixed(1) : null,
         flyNote, flyBusy, pathGoal: bot.pathfinder?.goal?.constructor?.name ?? null, moving: bot.pathfinder?.isMoving?.() ?? false, paused: !!bot.craftiePause,
       };
-      try { writeFileSync(join(homedir(), '.craftie', cfg.helper ? `status-${bot.username}.json` : 'status.json'), JSON.stringify(st, null, 1)); } catch {}
-    }, 3000);
+      try { writeFileSync(statusFile(), JSON.stringify(st, null, 1)); } catch {}
+    }, 1000);
 
     // Match the player's game mode (creative <-> survival) when cheats allow it.
     let toldNoCheats = false, lastModeSwitch = 0;
@@ -665,6 +709,7 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
     bot.on('error', (e: Error) => console.log('[mc] error:', e.message));
     bot.on('end', (why: string) => {
       console.log('[mc] disconnected:', why);
+      online = false; try { rmSync(statusFile(), { force: true }); } catch {}
       if (!stopped && (cfg.autoReconnect ?? true)) setTimeout(connect, 5000);
     });
   }
@@ -706,7 +751,8 @@ export function createMinecraftBody(cfg: MinecraftConfig): Body {
       }
     },
     vocab: () => (bot?.entity ? vocab(bot) : { blocks: [], items: [], mobs: [], players: [] }),
-    quit() { stopped = true; clearInterval(sendTimer); try { bot?.quit(); } catch {} },
+    quit() { stopped = true; online = false; clearInterval(sendTimer); try { bot?.quit(); } catch {} try { rmSync(statusFile(), { force: true }); } catch {} },
+    setJobSource(fn) { jobSource = fn; },
     onCommand: (cb) => void commandCbs.push(cb),
     onDanger: (cb) => void dangerCbs.push(cb),
     onDeath: (cb) => void deathCbs.push(cb),

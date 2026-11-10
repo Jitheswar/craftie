@@ -133,6 +133,7 @@ export class Brain {
 
   constructor(body: Body, llm: LLM, router: JevRouter | null, cfg: BrainConfig = {}) {
     this.body = body; this.llm = llm; this.router = router; this.cfg = cfg;
+    body.setJobSource(() => this.fighting ? 'fighting' : this.current);
     body.onCommand((from, text, isPrivate) => {
       this.privateTo = isPrivate ? from : null;
       this.onCommand(from, text).catch((e) => console.error('[brain]', e));

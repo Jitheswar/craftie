@@ -13,7 +13,7 @@ export function vanillaDir(): string {
   return os === 'win32' ? join(appData, '.minecraft') : os === 'darwin' ? join(home, 'Library/Application Support/minecraft') : join(home, '.minecraft');
 }
 
-function prismRoots(): string[] {
+export function prismRoots(): string[] {
   return [
     dataDir('PrismLauncher'),
     join(home, '.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher'), // Flatpak

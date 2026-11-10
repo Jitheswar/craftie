@@ -101,10 +101,14 @@ Pick whichever you have:
 
 | Mod | What it does |
 |---|---|
-| **Craftie Auto LAN** (in [`mods/`](mods/)) | Opens every world to LAN with Online Mode off as soon as you load it, so Craftie joins with no clicks. Ready-made jars for 1.20.1, 1.20.4, 1.21.1 and 1.21.4 are in `mods/builds/`. |
-| **[CustomSkinLoader](https://modrinth.com/mod/customskinloader)** | Gives Craftie a skin in your game: put a skin at `CustomSkinLoader/LocalSkin/skins/Craftie.png` in your game folder. |
+| **Craftie Auto LAN** (in [`mods/`](mods/)) | Opens every world to LAN with Online Mode off as soon as you load it, so Craftie joins with no clicks. On Minecraft 26.x it also adds a status panel (each Craftie's health, food, distance, direction and current job), an order box on the **G** key with quick buttons, the `/craftie <order>` command (orders go as private messages), and Craftie's own skin, which everyone in your world sees. Ready-made jars for 1.20.1, 1.20.4, 1.21.1, 1.21.4 and 26.3 are in `mods/builds/`. |
+| **[CustomSkinLoader](https://modrinth.com/mod/customskinloader)** | Gives Craftie a skin in your game on versions before 26.x: put a skin at `CustomSkinLoader/LocalSkin/skins/Craftie.png` in your game folder. |
 
-Neither mod affects friends joining your world.
+**Installing it:** step 4 of the setup page lists the Minecraft instances on your PC (Prism Launcher, MultiMC, PolyMC, and the standard `.minecraft` folder). Pick one and press **Install**; it also adds Fabric API if the instance doesn't have it. The mod needs the Fabric loader. Settings are in `config/craftie-autolan.properties` in the game folder, and the keys can be changed under Controls.
+
+Only you need these mods. Friends install nothing, and neither mod affects them joining your world.
+
+**Newer Minecraft than Craftie's library supports** (e.g. 26.3; it speaks up to 26.1): Craftie starts [ViaProxy](https://github.com/ViaVersion/ViaProxy) on its own and joins through it. It's downloaded once (about 50 MB) into `~/.craftie/viaproxy`, and it needs Java installed.
 
 ---
 

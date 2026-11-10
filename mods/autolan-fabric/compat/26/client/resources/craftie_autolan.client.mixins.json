@@ -1,0 +1,7 @@
+{
+	"required": false,
+	"package": "dev.craftie.autolan.mixin",
+	"compatibilityLevel": "JAVA_25",
+	"client": ["CraftieSkinMixin", "CraftieProfileMixin"],
+	"injectors": { "defaultRequire": 0 }
+}

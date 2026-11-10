@@ -11,6 +11,8 @@ import mc from 'minecraft-protocol';
 export type LanWorld = { host: string; port: number; motd: string };
 
 const SKIP = new Set([22, 53, 80, 443, 631, 3000, 3007, 5432, 6379, 8080, 11434]);
+/** Ports of our own ViaProxy: it mirrors the world's name, so never mistake it for a world. */
+export const ownPorts = new Set<number>();
 
 function localPorts(): number[] {
   try {
@@ -22,7 +24,7 @@ function localPorts(): number[] {
       if (!/LISTEN/i.test(line) && platform() !== 'linux') continue;
       const m = line.match(/[.:](\d{2,5})\s+\S*[*:]/) ?? line.match(/[.:](\d{2,5})\s/);
       const p = Number(m?.[1]);
-      if (p > 1024 && !SKIP.has(p)) ports.add(p);
+      if (p > 1024 && !SKIP.has(p) && !ownPorts.has(p)) ports.add(p);
     }
     return [...ports];
   } catch { return []; }

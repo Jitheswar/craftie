@@ -1,0 +1,21 @@
+{
+	"schemaVersion": 1,
+	"id": "craftie_autolan",
+	"version": "${version}",
+	"name": "Craftie Auto LAN",
+	"description": "The in-game side of the Craftie AI helper, all on your own PC. Opens every singleplayer world to LAN (Online Mode off) so Craftie joins without clicks, shows what Craftie is doing, adds an order key (G) and the /craftie command, and gives Craftie its skin. Settings: config/craftie-autolan.properties.",
+	"authors": ["Craftie"],
+	"license": "MIT",
+	"icon": "assets/craftie_autolan/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": ["dev.craftie.autolan.AutoLan", "dev.craftie.autolan.CraftieClient"]
+	},
+	"mixins": [{ "config": "craftie_autolan.client.mixins.json", "environment": "client" }],
+	"depends": {
+		"fabricloader": ">=0.15.0",
+		"minecraft": "~1.20.1",
+		"java": ">=17",
+		"fabric-api": "*"
+	}
+}

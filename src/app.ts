@@ -12,6 +12,7 @@ import { format } from 'node:util';
 import { detectAIs } from './core/detect.ts';
 import { autostartEnabled, setAutostart } from './core/autostart.ts';
 import { guessPlayerName } from './core/launchers.ts';
+import { installMod, listInstances } from './core/instances.ts';
 import { isComplete, loadSetup, saveSetup, savedSecrets, Session, type Setup, storeSecrets } from './core/session.ts';
 
 const PORT = 3008;
@@ -120,6 +121,12 @@ const server = createServer(async (req, res) => {
       saveSetup(clean);
       const how = await session.apply(clean); // live when possible; rejoins only for name/where changes
       return json(res, 200, { ok: true, how });
+    }
+    if (url.pathname === '/api/instances') return json(res, 200, { instances: listInstances() });
+    if (req.method === 'POST' && url.pathname === '/api/install-mod') {
+      const { id } = await readBody(req);
+      try { return json(res, 200, { ok: true, message: await installMod(String(id)) }); }
+      catch (e: any) { return json(res, 200, { ok: false, message: e.message }); }
     }
     if (req.method === 'POST' && url.pathname === '/api/stop') { await session.stop(); return json(res, 200, { ok: true }); }
     if (req.method === 'POST' && url.pathname === '/api/command') {
