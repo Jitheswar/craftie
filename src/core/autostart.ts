@@ -45,12 +45,18 @@ export function setAutostart(on: boolean) {
 </dict></plist>
 `);
   } else {
+    // .desktop Exec lines don't allow shell quoting like '\'' (the session then
+    // skips the whole file), so the shell command lives in a small script.
     const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+    const script = join(dirname(logFile), 'autostart.sh');
+    writeFileSync(script, `#!/bin/sh\ncd ${q(root)} && exec ${q(node)} ${q(app)} >> ${q(logFile)} 2>&1\n`, { mode: 0o755 });
+    // Exec quoting: double quotes, backslash before " ` $ \, then backslashes doubled again; % becomes %%.
+    const dq = (s: string) => `"${s.replace(/["`$\\]/g, '\\$&').replace(/\\/g, '\\\\').replace(/%/g, '%%')}"`;
     writeFileSync(file, `[Desktop Entry]
 Type=Application
 Name=Craftie
 Comment=AI helper for Minecraft (waits for your game in the background)
-Exec=sh -c ${q(`cd ${q(root)} && exec ${q(node)} ${q(app)} >> ${q(logFile)} 2>&1`)}
+Exec=sh ${dq(script)}
 Terminal=false
 X-GNOME-Autostart-enabled=true
 NoDisplay=true
